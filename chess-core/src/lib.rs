@@ -233,7 +233,7 @@ pub struct Board {
 impl Board {
     #[must_use]
     pub fn new() -> Self {
-        Self::from_str("rnbqkbnr/pppppppp////PPPPPPPP/RNBQKBNR").expect("invalid fen")
+        Self::from_str("rnbqkbnr/pppppppp/////PPPPPPPP/RNBQKBNR").expect("invalid fen")
     }
 
     #[must_use]
@@ -338,12 +338,12 @@ impl FromStr for Board {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 #[must_use]
 pub struct ChessMove {
-    from: (usize, usize),
-    to: (usize, usize),
-    promotion: Option<Kind>,
+    pub from: (usize, usize),
+    pub to: (usize, usize),
+    pub promotion: Option<Kind>,
 }
 
 impl ChessMove {

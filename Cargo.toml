@@ -11,3 +11,12 @@ members = [
 ]
 
 [dependencies]
+chess-server = { version = "0.1", path = "chess-server" }
+tokio = { version = "1.50.0", features = ["rt-multi-thread"] }
+
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
