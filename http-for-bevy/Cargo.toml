@@ -1,0 +1,11 @@
+[package]
+name = "http-for-bevy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.18.1", default-features = false }
+crossbeam-channel = "0.5.15"
+ehttp = { version = "0.7.1", features = ["json", "native-async"] }
+serde = "1.0.228"
+serde_json = "1.0.149"

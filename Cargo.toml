@@ -7,11 +7,13 @@ edition = "2024"
 members = [
   "chess-core",
   "chess-server",
-  "chess-client"
+  "chess-client",
+  "http-for-bevy"
 ]
 
 [dependencies]
 chess-server = { version = "0.1", path = "chess-server" }
+dotenv = "0.15.0"
 tokio = { version = "1.50.0", features = ["rt-multi-thread"] }
 
 [profile.dev]

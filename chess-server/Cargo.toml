@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = { version = "0.8.8", features = ["macros"] }
+axum = { version = "0.8.8", features = ["macros", "ws"] }
 futures = "0.3.32"
-jsonwebtoken = "10.3.0"
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 rand = "0.10.0"
 serde = "1.0.228"
 serde_json = "1.0.149"
@@ -14,3 +14,7 @@ sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio", "tls-native
 tokio = "1.50.0"
 tracing = "0.1.44"
 uuid = "1.23.0"
+chess-core = { version = "0.1", path = "../chess-core" }
+tracing-subscriber = "0.3.23"
+tower-http = { version = "0.6.8", features = ["trace"] }
+crossbeam-channel = "0.5.15"

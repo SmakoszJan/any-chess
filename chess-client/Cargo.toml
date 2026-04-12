@@ -4,14 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-aeronet_websocket = "0.19.1"
+aeronet_websocket = { version = "0.20.0", features = ["client"] }
 bevy = { version = "0.18.1", features = ["debug", "experimental_bevy_ui_widgets"] }
 crossbeam-channel = "0.5.15"
 flume = "0.12.0"
 futures = "0.3.32"
-serde = "1.0.228"
+serde = { version = "1.0.228", features = ["rc"] }
 serde_json = "1.0.149"
-tokio = "1.50.0"
 tracing = "0.1.44"
 chess-core = { version = "0.1", path = "../chess-core" }
+http-for-bevy = { version = "0.1", path = "../http-for-bevy" }
+bevy_simple_text_input = "0.14.1"
+b64 = "0.4.0"
+base64 = "0.22.1"
+dirs = "6.0.0"
+aeronet_io = "0.20.0"
 

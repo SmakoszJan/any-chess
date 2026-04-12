@@ -7,6 +7,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub mod net;
+
 #[cfg(test)]
 pub mod tests {
     use std::str::FromStr;
@@ -168,6 +170,19 @@ pub mod tests {
             Err(ChessError::MovePattern)
         );
     }
+
+    #[test]
+    fn cant_move_after_victory() {
+        let mut board = Board::from_str("kRp").unwrap();
+
+        let m = ChessMove::new((7, 1), (7, 0));
+        m.exec(&mut board);
+
+        assert_eq!(
+            ChessMove::new((7, 2), (6, 2)).check(&board),
+            Err(ChessError::AlreadyWon)
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,9 +239,9 @@ impl Display for Piece {
 
 pub struct Board {
     state: [Option<Piece>; 64],
-    turn: Color,
+    pub turn: Color,
     ordered: bool,
-    victory: Option<Color>,
+    pub victory: Option<Color>,
     en_passant: Option<(usize, usize)>,
 }
 
@@ -338,7 +353,7 @@ impl FromStr for Board {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 #[must_use]
 pub struct ChessMove {
     pub from: (usize, usize),
@@ -382,6 +397,8 @@ pub trait Table {
     type Player: Player;
 
     fn players(&self) -> &[Self::Player];
+
+    fn state(&self) -> &mut Board;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +410,7 @@ pub enum ChessError {
     Collision,
     OnlyMoveYourColor,
     Promotion,
+    AlreadyWon,
 }
 
 impl Move for ChessMove {
@@ -404,6 +422,10 @@ impl Move for ChessMove {
     }
 
     fn check(&self, state: &Self::State) -> Result<(), ChessError> {
+        if state.victory.is_some() {
+            return Err(ChessError::AlreadyWon);
+        }
+
         if self.from.0 > 7 || self.from.1 > 7 || self.to.0 > 7 || self.to.1 > 7 {
             return Err(ChessError::OutOfBounds);
         }
@@ -577,6 +599,7 @@ impl Move for ChessMove {
 
     fn exec(self, state: &mut Self::State) {
         let target = state[self.to];
+        assert!(state[self.from].is_some());
         state[self.to] = state[self.from].take();
         state.turn = !state.turn;
 
@@ -607,11 +630,11 @@ impl Move for ChessMove {
     }
 }
 
-pub async fn logic(table: &impl Table) {
-    let mut state = Board::new();
+pub async fn logic(table: impl Table) {
     let [w, b] = table.players() else {
         panic!("illegal player count")
     };
+    let mut state = table.state();
 
     loop {
         w.query::<ChessMove>(&state).await.exec(&mut state);

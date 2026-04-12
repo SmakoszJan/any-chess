@@ -11,7 +11,7 @@ CREATE TABLE room (
 CREATE TABLE event (
     room_id integer NOT NULL,
     time timestamptz NOT NULL DEFAULT now(),
-    payload text NOT NULL,
+    payload jsonb NOT NULL,
     CONSTRAINT pk_event
         PRIMARY KEY (room_id, time),
     CONSTRAINT fk_room
