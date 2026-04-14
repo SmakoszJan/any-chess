@@ -5,17 +5,14 @@ CREATE TABLE room (
     room_id serial PRIMARY KEY,
     white_taken boolean NOT NULL,
     name text,
-    open boolean NOT NULL DEFAULT true
+    open boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    created_by bigint
 );
 
 CREATE TABLE event (
-    room_id integer NOT NULL,
+    room_id integer NOT NULL REFERENCES room ON DELETE CASCADE,
     time timestamptz NOT NULL DEFAULT now(),
     payload jsonb NOT NULL,
-    CONSTRAINT pk_event
-        PRIMARY KEY (room_id, time),
-    CONSTRAINT fk_room
-        FOREIGN KEY (room_id)
-        REFERENCES room(room_id)
-        ON DELETE CASCADE
+    PRIMARY KEY (room_id, time)
 );

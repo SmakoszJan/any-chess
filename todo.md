@@ -1,10 +1,9 @@
-Websocket cap
 Rate limiting
-game pruning
-tier-based game-pruning
-games-per-ip limit
 privacy notice
-players can technically move other color. This is bad
+
+clients need to react properly to tables disappearing mid-logic (but that's boring)
+
+set up pruning cron
 
 LATER:
 Currently, the way moves and events work is all messed up and extremely prone to desyncs. This is only

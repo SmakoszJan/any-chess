@@ -74,6 +74,9 @@ impl RequestType for PlayRoom {
 }
 
 #[derive(Message)]
+pub struct RoomDeleted(pub i32);
+
+#[derive(Message)]
 pub struct PlayToken {
     pub token: String,
     pub is_white: bool,
@@ -144,18 +147,23 @@ fn on_room_joined(
 fn on_room_played(
     mut ev: MessageReader<HttpResponse<PlayRoom>>,
     mut out: MessageWriter<PlayToken>,
+    mut deleted: MessageWriter<RoomDeleted>,
 ) {
     for ev in ev.read() {
-        if ev.status != 200 {
-            tracing::error!("HTTP error from {}: {:?}", ev.url, ev.text());
-            continue;
+        // 410 means the room no longer exists
+        match ev.status {
+            200 => {
+                out.write(PlayToken {
+                    token: ev.text().unwrap().to_string(),
+                    is_white: ev.extra().is_white,
+                    room: ev.extra().room,
+                });
+            }
+            410 => {
+                deleted.write(RoomDeleted(ev.extra().room));
+            }
+            _ => tracing::error!("HTTP error from {}: {:?}", ev.url, ev.text()),
         }
-
-        out.write(PlayToken {
-            token: ev.text().unwrap().to_string(),
-            is_white: ev.extra().is_white,
-            room: ev.extra().room,
-        });
     }
 }
 
@@ -181,6 +189,7 @@ pub fn plugin(app: &mut App) {
         .add_message::<ReceivedRooms>()
         .add_message::<RoomJoined>()
         .add_message::<PlayToken>()
+        .add_message::<RoomDeleted>()
         .add_request_type::<ReloadRooms>()
         .add_request_type::<CreateRoom>()
         .add_request_type::<JoinRoom>()

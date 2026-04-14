@@ -2090,6 +2090,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chess-core",
+ "client-ip",
  "crossbeam-channel",
  "futures",
  "jsonwebtoken",
@@ -2113,6 +2114,15 @@ dependencies = [
  "glob",
  "libc",
  "libloading",
+]
+
+[[package]]
+name = "client-ip"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39d2056bf065c8b4bce5a8898d40e175211ff4410add2a84d695845d3937c729"
+dependencies = [
+ "http",
 ]
 
 [[package]]

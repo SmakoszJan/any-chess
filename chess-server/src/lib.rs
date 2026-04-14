@@ -2,8 +2,10 @@
 
 use std::{
     borrow::Cow,
+    hash::{DefaultHasher, Hash as _, Hasher},
+    net::IpAddr,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicUsize},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -18,7 +20,7 @@ use axum::{
     routing::{get, post},
 };
 use chess_core::{
-    Board, Move,
+    Board, Color, Move,
     net::{ChessEvent, ChessMessage, ClientMessage, CreateRoom, Room, RoomPlayer},
 };
 use futures::lock::Mutex;
@@ -39,6 +41,8 @@ pub enum Error {
     Jwt(jsonwebtoken::errors::Error),
     NotFound,
     Unauthorized,
+    Rejected,
+    Gone,
 }
 
 impl IntoResponse for Error {
@@ -46,9 +50,10 @@ impl IntoResponse for Error {
         tracing::error!("{self:?}");
 
         match &self {
-            Self::NotFound => return (StatusCode::NOT_FOUND, "Not found.").into_response(),
+            Self::NotFound => return StatusCode::NOT_FOUND.into_response(),
+            Self::Gone => return StatusCode::GONE.into_response(),
             Self::Unauthorized => {
-                return (StatusCode::UNAUTHORIZED, "Unauthorized.").into_response();
+                return StatusCode::UNAUTHORIZED.into_response();
             }
             _ => (),
         }
@@ -78,16 +83,18 @@ impl From<sqlx::Error> for Error {
 #[derive(Clone)]
 struct AppState {
     pool: PgPool,
+    secret: Arc<str>,
     encode_key: EncodingKey,
     decode_secret: DecodingKey,
     games: Arc<Mutex<StateSet>>,
+    password: Arc<str>,
 }
 
 impl AppState {
     fn state_loader(
         &self,
         room: i32,
-    ) -> impl FnOnce() -> Pin<Box<dyn Future<Output = Table> + Send>> {
+    ) -> impl FnOnce() -> Pin<Box<dyn Future<Output = Result<Table, Error>> + Send>> {
         struct Res {
             payload: serde_json::Value,
         }
@@ -101,15 +108,14 @@ impl AppState {
                     room
                 )
                 .fetch_all(&pool)
-                .await
-                .unwrap()
+                .await?
                 .into_iter()
-                .map(|v| serde_json::from_value(v.payload).unwrap());
+                .map(|v| serde_json::from_value(v.payload).expect("event deserialization failed"));
 
                 let mut table = Table::new();
                 table.process_all(events);
 
-                table
+                Ok(table)
             })
         }
     }
@@ -125,18 +131,23 @@ pub async fn serve() -> Result<(), Error> {
         .connect(&std::env::var("DATABASE_URL").expect("missing environment variable"))
         .await?;
 
+    let password = std::env::var("PASSWORD").expect("missing password");
     let secret = std::env::var("SECRET_JWT").expect("missing environment variable");
-    let secret = secret.as_bytes();
+    let secret: Arc<str> = Arc::from(secret);
+    let secret_bytes = secret.as_bytes();
     let app = Router::new()
         .route("/rooms", get(get_rooms).post(create_room))
         .route("/rooms/{id}/join", post(join_room))
         .route("/rooms/{id}/play", get(play))
         .route("/connect", get(connect))
+        .route("/prune", post(prune))
         .with_state(AppState {
             pool,
-            encode_key: EncodingKey::from_secret(secret),
-            decode_secret: DecodingKey::from_secret(secret),
+            encode_key: EncodingKey::from_secret(secret_bytes),
+            decode_secret: DecodingKey::from_secret(secret_bytes),
+            secret: secret,
             games: Arc::default(),
+            password: password.into(),
         })
         .layer(TraceLayer::new_for_http());
 
@@ -164,18 +175,45 @@ struct PlayerClaims {
     exp: u64,
 }
 
+#[derive(Hash)]
+struct Obscured<'r> {
+    ip: IpAddr,
+    secret: &'r str,
+}
+
 async fn create_room(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(room): Json<CreateRoom>,
 ) -> Result<Json<RoomPlayer>, Error> {
+    let ip = client_ip::true_client_ip(&headers).ok().map(|ip| {
+        let data = Obscured {
+            ip,
+            secret: &state.secret,
+        };
+        let mut s = DefaultHasher::default();
+        data.hash(&mut s);
+        s.finish() as i64
+    });
+
     let is_white = rand::random_bool(0.5);
     let id = sqlx::query_scalar!(
-        "INSERT INTO room (white_taken, name, open) VALUES ($1, $2, true) RETURNING room_id;",
+        "INSERT INTO room (white_taken, name, open, created_by)
+            SELECT $1, $2, true, $3
+            WHERE (
+                SELECT COUNT(*) FROM room WHERE created_by=$3
+            ) < 100
+        RETURNING room_id;",
         is_white,
-        room.0
+        room.0,
+        ip
     )
-    .fetch_one(&state.pool)
+    .fetch_optional(&state.pool)
     .await?;
+
+    let Some(id) = id else {
+        return Err(Error::Rejected);
+    };
 
     let token = jsonwebtoken::encode(
         &Header::default(),
@@ -237,6 +275,7 @@ async fn join_room(
 struct ConnectClaims {
     exp: u64,
     room: i32,
+    is_white: bool,
 }
 
 async fn play(
@@ -265,6 +304,17 @@ async fn play(
         return Err(Error::Unauthorized);
     }
 
+    // Confirm the room exists.
+    let exists = sqlx::query_scalar!(
+        "SELECT EXISTS(SELECT 1 FROM room WHERE room_id = $1);",
+        room
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    if exists != Some(true) {
+        return Err(Error::NotFound);
+    }
+
     Ok(jsonwebtoken::encode(
         &Header::default(),
         &ConnectClaims {
@@ -274,6 +324,7 @@ async fn play(
                 .as_secs()
                 + 60,
             room,
+            is_white: claims.is_white,
         },
         &state.encode_key,
     )?)
@@ -283,6 +334,9 @@ async fn play(
 struct ConnectQuery {
     token: String,
 }
+
+const WEBSOCKET_CAP: usize = 10_000;
+static WEBSOCKET_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 async fn connect(
     Query(token): Query<ConnectQuery>,
@@ -296,26 +350,70 @@ async fn connect(
     )?
     .claims;
 
+    // We acquire here, so that by the time we create the websocket, we remain safely within cap.
+    if WEBSOCKET_COUNT.fetch_add(1, std::sync::atomic::Ordering::Acquire) >= WEBSOCKET_CAP {
+        // If we fail, we put the websocket back down
+        // I'm not actually sure if the Release is necessary here. Let's pretend it is, though.
+        WEBSOCKET_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Release);
+        return Err(Error::Rejected);
+    }
+
     // Everything fine by now.
-    Ok(ws.on_upgrade(move |ws| handle_websocket(ws, state, claims.room)))
+    Ok(ws
+        .on_failed_upgrade(|_| {
+            WEBSOCKET_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .on_upgrade(move |ws| handle_websocket(ws, state, claims.room, claims.is_white)))
 }
 
-async fn handle_websocket(mut socket: WebSocket, app_state: AppState, room: i32) {
+pub struct Connection(WebSocket);
+
+impl Connection {
+    async fn send(&mut self, msg: &ChessMessage<'_>) -> Result<(), axum::Error> {
+        self.0
+            .send(ws::Message::text(
+                serde_json::to_string(msg).expect("message serialization failed"),
+            ))
+            .await
+    }
+
+    async fn recv(&mut self) -> Option<ClientMessage> {
+        self.0
+            .recv()
+            .await?
+            .ok()
+            .and_then(|v| v.into_text().ok())
+            .map(|v| serde_json::from_slice(v.as_bytes()).expect("serialization failed"))
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        WEBSOCKET_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
+}
+
+async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_white: bool) {
+    let mut socket = Connection(socket);
+    let color = if is_white { Color::White } else { Color::Black };
     // First, load the state. We'll send it over the websocket
-    let table = app_state
+    let Ok(table) = app_state
         .games
         .lock()
         .await
         .insert_or_bump(room, app_state.state_loader(room))
-        .await;
+        .await
+    else {
+        // Ghosting the client is kinda rude but I can't be bothered
+        // to fix our communication issues.
+        return;
+    };
 
     // Sync the new guy
     let mut receiver = {
         let table = table.lock().await;
         let Ok(()) = socket
-            .send(ws::Message::text(
-                serde_json::to_string(&ChessMessage::Sync(Cow::Borrowed(&table.events))).unwrap(),
-            ))
+            .send(&ChessMessage::Sync(Cow::Borrowed(&table.events)))
             .await
         else {
             return;
@@ -328,26 +426,18 @@ async fn handle_websocket(mut socket: WebSocket, app_state: AppState, room: i32)
     loop {
         tokio::select! {
             msg = socket.recv() => {
-                let Some(Ok(msg)) = msg else {
+                let Some(msg) = msg else {
                     break;
-                };
-
-                let Ok(msg) = msg.to_text() else {
-                    continue;
-                };
-                let Ok(msg) = serde_json::from_str::<ClientMessage>(msg) else {
-                    continue;
                 };
 
                 match msg {
                     ClientMessage::Move(mv) => {
                         let mut table = table.lock().await;
-                        if mv.check(&table.board).is_err() {
+
+                        if table.board[mv.from].is_none_or(|v| v.color != color) || mv.check(&table.board).is_err() {
                             tracing::debug!("erroneous move {mv:?}");
                             socket
-                                .send(ws::Message::text(
-                                    serde_json::to_string(&ChessMessage::MoveError).unwrap(),
-                                ))
+                                .send(&ChessMessage::MoveError)
                                 .await
                                 .ok();
                             continue;
@@ -357,14 +447,14 @@ async fn handle_websocket(mut socket: WebSocket, app_state: AppState, room: i32)
                         let res = sqlx::query!(
                             "INSERT INTO event (room_id, payload) VALUES ($1, $2);",
                             room,
-                            serde_json::to_value(ChessEvent::Move(mv)).unwrap()
+                            serde_json::to_value(ChessEvent::Move(mv)).expect("move serialization failed")
                         )
                             .execute(&app_state.pool)
                             .await;
 
                         if let Err(err) = res {
                             tracing::error!("Sqlx call failed: {err:?}, aborting");
-                            return;
+                            break;
                         }
 
                         // Move is ok now, we can make it
@@ -373,10 +463,57 @@ async fn handle_websocket(mut socket: WebSocket, app_state: AppState, room: i32)
                 }
             }
             ev = receiver.recv() => {
-                socket.send(ws::Message::text(serde_json::to_string(&ChessMessage::Event(ev.unwrap())).unwrap())).await.unwrap();
+                let Ok(()) = socket.send(&ChessMessage::Event(ev.unwrap())).await else {return;};
             }
         }
     }
+
+    // All resource management SHOULD be done via RAII and regular pruning.
+    // SHOULD
+}
+
+async fn prune(headers: HeaderMap, State(state): State<AppState>) -> Result<(), Error> {
+    // Auth
+    let (_, auth) = headers
+        .get(AUTHORIZATION)
+        .ok_or(Error::Unauthorized)?
+        .to_str()
+        .map_err(|_| Error::Unauthorized)?
+        .split_once(' ')
+        .ok_or(Error::Unauthorized)?;
+
+    if auth != state.password.as_ref() {
+        return Err(Error::Unauthorized);
+    }
+
+    // Prune dead tables
+    state.games.lock().await.collect();
+
+    // Prune idle games older than 2 hours
+    sqlx::query!(
+        "DELETE FROM room WHERE room_id IN (
+            SELECT room_id FROM event RIGHT JOIN room USING(room_id)
+            WHERE  created_at < NOW() - INTERVAL '2 hours'
+            GROUP BY room_id HAVING COUNT(time) < 4
+        );"
+    )
+    .execute(&state.pool)
+    .await?;
+
+    // Prune games that have been inactive for 24 hrs
+    sqlx::query!(
+        "
+            DELETE FROM room WHERE NOT EXISTS (
+                SELECT 1 FROM event
+                WHERE event.room_id = room.room_id
+                AND time < NOW() - INTERVAL '1 day'
+            );
+        "
+    )
+    .execute(&state.pool)
+    .await?;
+
+    Ok(())
 }
 
 pub struct Table {

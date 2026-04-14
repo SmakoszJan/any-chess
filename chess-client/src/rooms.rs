@@ -22,7 +22,7 @@ use http_for_bevy::HttpRequest;
 use net::{ReceivedRooms, ReloadRooms};
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::net::{CreateRoom, JoinRoom, PlayRoom, RoomJoined};
+use crate::rooms::net::{CreateRoom, JoinRoom, PlayRoom, RoomDeleted, RoomJoined};
 
 mod net;
 
@@ -379,6 +379,12 @@ fn on_remove_room(room: On<RemoveRoom>, mut rooms: ResMut<MyRooms>) {
     }
 }
 
+fn on_room_deleted(mut ev: MessageReader<RoomDeleted>, mut commands: Commands) {
+    for ev in ev.read() {
+        commands.trigger(RemoveRoom(ev.0));
+    }
+}
+
 pub fn plugin(app: &mut App) {
     app.add_plugins((net::plugin, TextInputPlugin))
         .add_systems(Startup, load_rooms)
@@ -392,6 +398,7 @@ pub fn plugin(app: &mut App) {
                 on_room_joined,
                 render_my_rooms,
                 save_rooms,
+                on_room_deleted,
             )
                 .run_if(in_state(super::State::Menu)),
         )
