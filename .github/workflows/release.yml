@@ -31,10 +31,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux Dependencies
-              if: runner.os == 'Linux'
-              run: |
-                sudo apt-get update
-                sudo apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
       - name: Build Application
         run: cargo build --release -p chess-client
