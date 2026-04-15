@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO room (white_taken, name, open, created_by)\n            SELECT $1, $2, true, $3\n            WHERE (\n                SELECT COUNT(*) FROM room WHERE created_by=$3\n            ) < 100\n        RETURNING room_id;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e6753b0be77560de64e988a407c30304d5b7d2a56287f24b39f79458c820abfd"
+}
