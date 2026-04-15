@@ -1,3 +1,4 @@
+DROP INDEX IF EXISTS ip_idx;
 DROP TABLE IF EXISTS room CASCADE;
 DROP TABLE IF EXISTS event;
 
@@ -9,6 +10,8 @@ CREATE TABLE room (
     created_at timestamptz NOT NULL DEFAULT now(),
     created_by bigint
 );
+
+CREATE INDEX ip_idx ON room(created_by);
 
 CREATE TABLE event (
     room_id integer NOT NULL REFERENCES room ON DELETE CASCADE,
