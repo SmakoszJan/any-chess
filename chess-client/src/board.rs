@@ -399,6 +399,12 @@ fn on_play(
     ));
 }
 
+fn despawn_board(tiles: Query<Entity, With<Pickable>>, mut commands: Commands) {
+    for tile in tiles {
+        commands.get_entity(tile).unwrap().despawn();
+    }
+}
+
 #[derive(Message)]
 pub struct GameEnded(pub i32);
 
@@ -458,7 +464,7 @@ fn disconnect(session: Single<Entity, With<Session>>, mut commands: Commands) {
 pub fn plugin(app: &mut App) {
     app.add_plugins((MeshPickingPlugin, WebSocketClientPlugin, ui::plugin))
         .add_systems(Update, (sync_board, process_msgs))
-        .add_systems(OnExit(super::State::Game), disconnect)
+        .add_systems(OnExit(super::State::Game), (disconnect, despawn_board))
         .insert_resource(ChessBoard {
             board: Board::new(),
         })

@@ -21,7 +21,7 @@ jobs:
             asset: chess-client-linux
           - os: windows-latest
             bin: chess-client.exe
-            asset: chess-client-windows.exe
+            asset: chess-client-windows
 
     steps:
       - name: Checkout Code
@@ -37,11 +37,16 @@ jobs:
       - name: Build Application
         run: cargo build --release -p chess-client
 
-      - name: Rename Binary
+      - name: Package Binary and Assets
         shell: bash
-        run: mv target/release/${{ matrix.bin }} target/release/${{ matrix.asset }}
+        run: |
+          mkdir release_pkg
+          cp target/release/${{ matrix.bin }} release_pkg/
+          cp -r chess-client/assets release_pkg/
+          cd release_pkg
+          zip -r ../${{ matrix.asset }}.zip .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/${{ matrix.asset }}
+          files: ${{ matrix.asset }}.zip
