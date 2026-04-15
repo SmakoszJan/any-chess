@@ -1,5 +1,4 @@
-Rate limiting
-privacy notice
+Rate limiting (?)
 
 clients need to react properly to tables disappearing mid-logic (but that's boring)
 
