@@ -13,6 +13,11 @@ use ui::{HideUi, Promote, ShowUi};
 
 mod ui;
 
+#[cfg(debug_assertions)]
+const WS_URL: &str = "ws://0.0.0.0:3000";
+#[cfg(not(debug_assertions))]
+const WS_URL: &str = "wss://any-chess-smakoszjan2734-perdtvgt.leapcell.dev";
+
 #[derive(Message)]
 struct SyncBoard;
 
@@ -390,7 +395,7 @@ fn on_play(
     // Connect to client
     commands.spawn_empty().queue(WebSocketClient::connect(
         ClientConfig::default(),
-        format!("ws://0.0.0.0:3000/connect?token={}", play.token),
+        format!("{WS_URL}/connect?token={}", play.token),
     ));
 }
 

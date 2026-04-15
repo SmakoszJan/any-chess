@@ -1,0 +1,43 @@
+name: Compile and Release Client
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            bin: chess-client
+            asset: chess-client-linux
+          - os: windows-latest
+            bin: chess-client.exe
+            asset: chess-client-windows.exe
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Application
+        run: cargo build --release -p chess-client
+
+      - name: Rename Binary
+        shell: bash
+        run: mv target/release/${{ matrix.bin }} target/release/${{ matrix.asset }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/${{ matrix.asset }}
