@@ -37,7 +37,8 @@ jobs:
       - name: Build Application
         run: cargo build --release -p chess-client
 
-      - name: Package Binary and Assets
+      - name: Package for Linux
+        if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           mkdir release_pkg
@@ -45,6 +46,15 @@ jobs:
           cp -r chess-client/assets release_pkg/
           cd release_pkg
           zip -r ../${{ matrix.asset }}.zip .
+
+      - name: Package for Windows
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release_pkg
+          Copy-Item -Path "target\release\${{ matrix.bin }}" -Destination "release_pkg\"
+          Copy-Item -Path "chess-client\assets" -Destination "release_pkg\" -Recurse
+          Compress-Archive -Path "release_pkg\*" -DestinationPath "${{ matrix.asset }}.zip"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
