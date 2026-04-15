@@ -141,6 +141,8 @@ pub async fn serve() -> Result<(), Error> {
         .route("/rooms/{id}/play", get(play))
         .route("/connect", get(connect))
         .route("/prune", post(prune))
+        .route("/kaithhealth", get(health))
+        .route("/kaithheathcheck", get(health))
         .with_state(AppState {
             pool,
             encode_key: EncodingKey::from_secret(secret_bytes),
@@ -155,6 +157,10 @@ pub async fn serve() -> Result<(), Error> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn health() -> StatusCode {
+    StatusCode::OK
 }
 
 async fn get_rooms(State(state): State<AppState>) -> Result<Json<Vec<Room>>, Error> {
