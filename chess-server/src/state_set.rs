@@ -17,26 +17,25 @@ impl StateSet {
     // pub fn contains(&mut self, room: i32) -> bool {
     //     self.data.contains_key(room)
     // }
+    //
+    pub fn get(&self, room: i32) -> Option<Arc<Mutex<Table>>> {
+        self.data.get(&room).and_then(Weak::upgrade)
+    }
 
-    pub async fn insert_or_bump<F: Future<Output = Result<Table, crate::Error>>>(
-        &mut self,
-        room: i32,
-        with: impl FnOnce() -> F,
-    ) -> Result<Arc<Mutex<Table>>, crate::Error> {
-        let table = self.data.get(&room).cloned();
-        if table.is_none() {
+    pub fn maybe_insert(&mut self, room: i32, table: Arc<Mutex<Table>>) -> Arc<Mutex<Table>> {
+        let t = self.data.get(&room).cloned();
+        if t.is_none() {
             self.data.remove(&room);
         };
-        let table = table.as_ref().and_then(Weak::upgrade);
-        let table = if let Some(table) = table {
-            table
+        let t = t.as_ref().and_then(Weak::upgrade);
+        let t = if let Some(t) = t {
+            t
         } else {
-            let table = Arc::new(Mutex::new(with().await?));
             self.data.insert(room, Arc::downgrade(&table));
             table
         };
 
-        Ok(table)
+        t
     }
 
     pub fn collect(&mut self) {

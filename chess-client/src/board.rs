@@ -1,4 +1,7 @@
-use aeronet_io::{Session, connection::Disconnect};
+use aeronet_io::{
+    Session,
+    connection::{Disconnect, Disconnected},
+};
 use aeronet_websocket::client::{ClientConfig, WebSocketClient, WebSocketClientPlugin};
 use bevy::{color::palettes::css, ecs::query::QueryData, prelude::*};
 use chess_core::{
@@ -12,6 +15,11 @@ pub use ui::GoBack;
 use ui::{HideUi, Promote, ShowUi};
 
 mod ui;
+
+// #[cfg(debug_assertions)]
+// const WS_URL: &str = "ws://0.0.0.0:3000";
+// #[cfg(not(debug_assertions))]
+const WS_URL: &str = "wss://any-chess-smakoszjan2734-perdtvgt.leapcell.dev";
 
 #[derive(Message)]
 struct SyncBoard;
@@ -390,8 +398,14 @@ fn on_play(
     // Connect to client
     commands.spawn_empty().queue(WebSocketClient::connect(
         ClientConfig::default(),
-        format!("ws://0.0.0.0:3000/connect?token={}", play.token),
+        format!("{WS_URL}/connect?token={}", play.token),
     ));
+}
+
+fn despawn_board(tiles: Query<Entity, With<Pickable>>, mut commands: Commands) {
+    for tile in tiles {
+        commands.get_entity(tile).unwrap().despawn();
+    }
 }
 
 #[derive(Message)]
@@ -429,6 +443,7 @@ fn process_msgs(
 ) {
     for msg in session.recv.drain(..) {
         let msg: ChessMessage = serde_json::from_slice(msg.payload.as_ref()).unwrap();
+        tracing::info!("Received {msg:?}");
 
         match msg {
             ChessMessage::Sync(events) => {
@@ -450,10 +465,18 @@ fn disconnect(session: Single<Entity, With<Session>>, mut commands: Commands) {
     commands.trigger(Disconnect::new(session.entity(), "client disconnected"));
 }
 
+fn on_disconnect(ev: On<Disconnected>) {
+    tracing::info!("Disconnected: {:?}", ev.reason);
+}
+
+fn on_connect(_: On<Add, Session>) {
+    tracing::info!("Connected");
+}
+
 pub fn plugin(app: &mut App) {
     app.add_plugins((MeshPickingPlugin, WebSocketClientPlugin, ui::plugin))
         .add_systems(Update, (sync_board, process_msgs))
-        .add_systems(OnExit(super::State::Game), disconnect)
+        .add_systems(OnExit(super::State::Game), (disconnect, despawn_board))
         .insert_resource(ChessBoard {
             board: Board::new(),
         })
@@ -464,6 +487,8 @@ pub fn plugin(app: &mut App) {
         .add_observer(on_make_move)
         .add_observer(on_stage_move)
         .add_observer(on_promote)
+        .add_observer(on_disconnect)
+        .add_observer(on_connect)
         .add_message::<GameEnded>()
         .add_message::<SyncBoard>();
 }

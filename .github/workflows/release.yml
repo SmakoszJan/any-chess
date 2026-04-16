@@ -1,0 +1,62 @@
+name: Compile and Release Client
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            bin: chess-client
+            asset: chess-client-linux
+          - os: windows-latest
+            bin: chess-client.exe
+            asset: chess-client-windows
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y g++ pkg-config libx11-dev libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+      - name: Build Application
+        run: cargo build --release -p chess-client
+
+      - name: Package for Linux
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          mkdir release_pkg
+          cp target/release/${{ matrix.bin }} release_pkg/
+          cp -r chess-client/assets release_pkg/
+          cd release_pkg
+          zip -r ../${{ matrix.asset }}.zip .
+
+      - name: Package for Windows
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release_pkg
+          Copy-Item -Path "target\release\${{ matrix.bin }}" -Destination "release_pkg\"
+          Copy-Item -Path "chess-client\assets" -Destination "release_pkg\" -Recurse
+          Compress-Archive -Path "release_pkg\*" -DestinationPath "${{ matrix.asset }}.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}.zip
