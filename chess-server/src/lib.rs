@@ -403,9 +403,12 @@ async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_
     let table = if let Some(table) = table {
         table
     } else {
-        let Ok(table) = app_state.load(room).await else {
-            tracing::error!("room {room} failed to load");
-            return;
+        let table = match app_state.load(room).await {
+            Ok(table) => table,
+            Err(err) => {
+                tracing::error!("room {room} failed to load: {err:?}");
+                return;
+            }
         };
         app_state
             .games
