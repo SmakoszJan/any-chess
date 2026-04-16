@@ -1,4 +1,7 @@
-use aeronet_io::{Session, connection::Disconnect};
+use aeronet_io::{
+    Session,
+    connection::{Disconnect, Disconnected},
+};
 use aeronet_websocket::client::{ClientConfig, WebSocketClient, WebSocketClientPlugin};
 use bevy::{color::palettes::css, ecs::query::QueryData, prelude::*};
 use chess_core::{
@@ -13,9 +16,9 @@ use ui::{HideUi, Promote, ShowUi};
 
 mod ui;
 
-#[cfg(debug_assertions)]
-const WS_URL: &str = "ws://0.0.0.0:3000";
-#[cfg(not(debug_assertions))]
+// #[cfg(debug_assertions)]
+// const WS_URL: &str = "ws://0.0.0.0:3000";
+// #[cfg(not(debug_assertions))]
 const WS_URL: &str = "wss://any-chess-smakoszjan2734-perdtvgt.leapcell.dev";
 
 #[derive(Message)]
@@ -440,6 +443,7 @@ fn process_msgs(
 ) {
     for msg in session.recv.drain(..) {
         let msg: ChessMessage = serde_json::from_slice(msg.payload.as_ref()).unwrap();
+        tracing::info!("Received {msg:?}");
 
         match msg {
             ChessMessage::Sync(events) => {
@@ -461,6 +465,14 @@ fn disconnect(session: Single<Entity, With<Session>>, mut commands: Commands) {
     commands.trigger(Disconnect::new(session.entity(), "client disconnected"));
 }
 
+fn on_disconnect(ev: On<Disconnected>) {
+    tracing::info!("Disconnected: {:?}", ev.reason);
+}
+
+fn on_connect(_: On<Add, Session>) {
+    tracing::info!("Connected");
+}
+
 pub fn plugin(app: &mut App) {
     app.add_plugins((MeshPickingPlugin, WebSocketClientPlugin, ui::plugin))
         .add_systems(Update, (sync_board, process_msgs))
@@ -475,6 +487,8 @@ pub fn plugin(app: &mut App) {
         .add_observer(on_make_move)
         .add_observer(on_stage_move)
         .add_observer(on_promote)
+        .add_observer(on_disconnect)
+        .add_observer(on_connect)
         .add_message::<GameEnded>()
         .add_message::<SyncBoard>();
 }

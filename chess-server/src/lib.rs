@@ -4,7 +4,6 @@ use std::{
     borrow::Cow,
     hash::{DefaultHasher, Hash as _, Hasher},
     net::IpAddr,
-    pin::Pin,
     sync::{Arc, atomic::AtomicUsize},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -91,33 +90,27 @@ struct AppState {
 }
 
 impl AppState {
-    fn state_loader(
-        &self,
-        room: i32,
-    ) -> impl FnOnce() -> Pin<Box<dyn Future<Output = Result<Table, Error>> + Send>> {
+    async fn load(&self, room: i32) -> Result<Table, Error> {
         struct Res {
             payload: serde_json::Value,
         }
 
         let pool = self.pool.clone();
-        move || {
-            Box::pin(async move {
-                let events = sqlx::query_as!(
-                    Res,
-                    "SELECT payload FROM event WHERE room_id=$1 ORDER BY time ASC;",
-                    room
-                )
-                .fetch_all(&pool)
-                .await?
-                .into_iter()
-                .map(|v| serde_json::from_value(v.payload).expect("event deserialization failed"));
 
-                let mut table = Table::new();
-                table.process_all(events);
+        let events = sqlx::query_as!(
+            Res,
+            "SELECT payload FROM event WHERE room_id=$1 ORDER BY time ASC;",
+            room
+        )
+        .fetch_all(&pool)
+        .await?
+        .into_iter()
+        .map(|v| serde_json::from_value(v.payload).expect("event deserialization failed"));
 
-                Ok(table)
-            })
-        }
+        let mut table = Table::new();
+        table.process_all(events);
+
+        Ok(table)
     }
 }
 
@@ -391,7 +384,7 @@ impl Connection {
             .await?
             .ok()
             .and_then(|v| v.into_text().ok())
-            .map(|v| serde_json::from_slice(v.as_bytes()).expect("serialization failed"))
+            .and_then(|v| serde_json::from_slice(v.as_bytes()).ok())
     }
 }
 
@@ -405,17 +398,23 @@ async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_
     let mut socket = Connection(socket);
     let color = if is_white { Color::White } else { Color::Black };
     // First, load the state. We'll send it over the websocket
-    let Ok(table) = app_state
-        .games
-        .lock()
-        .await
-        .insert_or_bump(room, app_state.state_loader(room))
-        .await
-    else {
-        // Ghosting the client is kinda rude but I can't be bothered
-        // to fix our communication issues.
-        return;
+    let table = app_state.games.lock().await.get(room);
+
+    let table = if let Some(table) = table {
+        table
+    } else {
+        let Ok(table) = app_state.load(room).await else {
+            tracing::error!("room {room} failed to load");
+            return;
+        };
+        app_state
+            .games
+            .lock()
+            .await
+            .maybe_insert(room, Arc::new(Mutex::new(table)))
     };
+
+    tracing::info!("room {room} loaded state");
 
     // Sync the new guy
     let mut receiver = {
@@ -429,6 +428,8 @@ async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_
 
         table.sender.subscribe()
     };
+
+    tracing::info!("room {room} sync sent");
 
     // Handle moves/events
     loop {

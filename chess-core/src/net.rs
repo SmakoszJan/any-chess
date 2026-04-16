@@ -21,7 +21,7 @@ pub struct RoomPlayer {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CreateRoom(pub Option<String>);
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ChessMessage<'r> {
     Sync(Cow<'r, [ChessEvent]>),
     Event(ChessEvent),

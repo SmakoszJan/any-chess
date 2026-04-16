@@ -251,7 +251,8 @@ fn create_button() -> impl Bundle {
     )
 }
 
-fn spawn_ui(mut commands: Commands) {
+fn spawn_ui(mut commands: Commands, mut rooms: ResMut<MyRooms>) {
+    rooms.set_changed();
     commands
         .spawn((
             Node {
