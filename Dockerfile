@@ -14,4 +14,4 @@ COPY --from=builder /chess/target/release/chess /chess/chess-bin
 
 EXPOSE 3000
 
-CMD ["./chess"]
+CMD ["./chess-bin"]
