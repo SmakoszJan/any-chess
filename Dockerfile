@@ -10,8 +10,8 @@ FROM ubuntu:24.04
 
 WORKDIR /chess
 
-COPY --from=builder /chess/target/release /chess/chess-bin
+COPY --from=builder /chess/target/release/chess /chess/chess-bin
 
 EXPOSE 3000
 
-CMD ["./chess-bin"]
+CMD ["./chess"]
