@@ -185,17 +185,15 @@ async fn create_room(
     headers: HeaderMap,
     Json(room): Json<CreateRoom>,
 ) -> Result<Json<RoomPlayer>, Error> {
-    let ip = client_ip::rightmost_x_forwarded_for(&headers)
-        .ok()
-        .map(|ip| {
-            let data = Obscured {
-                ip,
-                secret: &state.secret,
-            };
-            let mut s = DefaultHasher::default();
-            data.hash(&mut s);
-            s.finish() as i64
-        });
+    let ip = client_ip::x_real_ip(&headers).ok().map(|ip| {
+        let data = Obscured {
+            ip,
+            secret: &state.secret,
+        };
+        let mut s = DefaultHasher::default();
+        data.hash(&mut s);
+        s.finish() as i64
+    });
 
     let is_white = rand::random_bool(0.5);
     let id = sqlx::query_scalar!(
