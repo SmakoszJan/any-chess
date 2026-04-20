@@ -12,8 +12,8 @@ WORKDIR /chess
 
 COPY --from=builder /chess/target/release /chess/chess
 
-# Open the port your WebSocket listens on
+RUN chmod +x /chess/chess
+
 EXPOSE 3000
 
-# Run the binary
 CMD ["./chess"]
