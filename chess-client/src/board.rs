@@ -16,10 +16,10 @@ use ui::{HideUi, Promote, ShowUi};
 
 mod ui;
 
-// #[cfg(debug_assertions)]
-// const WS_URL: &str = "ws://0.0.0.0:3000";
-// #[cfg(not(debug_assertions))]
-const WS_URL: &str = "wss://any-chess-smakoszjan2734-perdtvgt.leapcell.dev";
+#[cfg(debug_assertions)]
+const WS_URL: &str = "ws://0.0.0.0:3000";
+#[cfg(not(debug_assertions))]
+const WS_URL: &str = "ws://164.92.131.129";
 
 #[derive(Message)]
 struct SyncBoard;
