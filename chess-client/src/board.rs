@@ -379,7 +379,7 @@ fn on_play(
     let white = materials.add(Color::WHITE);
     let black = materials.add(Color::from(css::BROWN));
 
-    let mut x = -224.0;
+    let mut x = if play.is_white { -224.0 } else { 224.0 };
     let mut y = if play.is_white { -224.0 } else { 224.0 };
     for rank in 0..8 {
         for file in 0..8 {
@@ -410,7 +410,11 @@ fn on_play(
                         Visibility::Hidden,
                     ));
                 });
-            x += 64.0;
+            if play.is_white {
+                x += 64.0;
+            } else {
+                x -= 64.0;
+            }
         }
 
         if play.is_white {
@@ -418,7 +422,11 @@ fn on_play(
         } else {
             y -= 64.0;
         }
-        x = -224.0;
+        if play.is_white {
+            x = -224.0;
+        } else {
+            x = 224.0;
+        }
     }
 
     writer.write(SyncBoard);
