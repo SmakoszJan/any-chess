@@ -16,9 +16,9 @@ use ui::{HideUi, Promote, ShowUi};
 
 mod ui;
 
-#[cfg(debug_assertions)]
-const WS_URL: &str = "ws://0.0.0.0:3000";
-#[cfg(not(debug_assertions))]
+// #[cfg(debug_assertions)]
+// const WS_URL: &str = "ws://0.0.0.0:3000";
+// #[cfg(not(debug_assertions))]
 const WS_URL: &str = "ws://164.92.131.129";
 
 #[derive(Message)]
@@ -30,12 +30,18 @@ struct BoardPosition {
     file: usize,
 }
 
+impl BoardPosition {
+    fn tuple(self) -> (usize, usize) {
+        (self.rank, self.file)
+    }
+}
+
 #[derive(Resource)]
-struct ChessBoard {
+struct ServerBoard {
     board: Board,
 }
 
-impl Deref for ChessBoard {
+impl Deref for ServerBoard {
     type Target = Board;
 
     fn deref(&self) -> &Self::Target {
@@ -43,13 +49,13 @@ impl Deref for ChessBoard {
     }
 }
 
-impl DerefMut for ChessBoard {
+impl DerefMut for ServerBoard {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.board
     }
 }
 
-impl Index<BoardPosition> for ChessBoard {
+impl Index<BoardPosition> for ServerBoard {
     type Output = Option<Piece>;
 
     fn index(&self, index: BoardPosition) -> &Self::Output {
@@ -64,9 +70,23 @@ struct PieceMarker;
 struct MoveMarker;
 
 fn sync_board(
+    mut state: ResMut<ClientState>,
+    board: Res<ServerBoard>,
+    mut writer: MessageWriter<SyncBoard>,
+    mut commands: Commands,
+) {
+    if board.is_changed() {
+        state.board.clone_from(&board.board);
+        state.move_allowed = board.board.turn == state.color;
+        commands.trigger(StageMove(None));
+        writer.write(SyncBoard);
+    }
+}
+
+fn sync_ui(
     mut pieces: Query<(&BoardPosition, &mut Sprite, &mut Visibility), With<PieceMarker>>,
     mut reader: MessageReader<SyncBoard>,
-    board: Res<ChessBoard>,
+    state: Res<ClientState>,
     assets: Res<AssetServer>,
     mut commands: Commands,
 ) {
@@ -76,7 +96,7 @@ fn sync_board(
         pieces
             .par_iter_mut()
             .for_each(|(&sq, mut sprite, mut vis)| {
-                if let Some(piece) = board[sq] {
+                if let Some(piece) = state.board[sq.tuple()] {
                     *vis = Visibility::Inherited;
                     let color_letter = match piece.color {
                         chess_core::Color::White => 'w',
@@ -109,6 +129,8 @@ struct ClientState {
     color: ChessColor,
     move_allowed: bool,
     move_state: MoveState,
+    board: Board,
+    connected: bool,
 }
 
 impl Default for ClientState {
@@ -118,11 +140,13 @@ impl Default for ClientState {
             color: ChessColor::White,
             move_allowed: false,
             move_state: MoveState::None,
+            board: Board::new(),
+            connected: false,
         }
     }
 }
 
-#[derive(Event)]
+#[derive(Message)]
 struct MakeMove(ChessMove, bool);
 
 #[derive(Event)]
@@ -175,10 +199,10 @@ struct StageMove(Option<Entity>);
 
 fn on_stage_move(
     ev: On<StageMove>,
+    mut make_move: MessageWriter<MakeMove>,
     squares: Query<(&Children, &BoardPosition, &GlobalTransform)>,
     mut pieces: Query<&mut Transform>,
     mut markers: Query<(&mut Sprite, &mut Visibility, &BoardPosition), With<MoveMarker>>,
-    board: Res<ChessBoard>,
     mut commands: Commands,
     mut state: ResMut<ClientState>,
     assets: Res<AssetServer>,
@@ -209,14 +233,14 @@ fn on_stage_move(
             promotion: None,
         };
 
-        if let Some(piece) = board[*from.1]
+        if let Some(piece) = state.board[from.1.tuple()]
             && piece.kind == Kind::Pawn
             && (to.1.rank == 0 || to.1.rank == 7)
         {
             m.promotion = Some(Kind::Queen);
         }
 
-        if m.check(&board).is_ok() {
+        if m.check(&state.board).is_ok() {
             if m.promotion.is_some() {
                 state.move_state = MoveState::Promote {
                     from: current,
@@ -226,7 +250,7 @@ fn on_stage_move(
                     at: to.2.translation() - Vec3::new(32.0, -128.0, 0.0),
                 });
             } else {
-                commands.trigger(MakeMove(m, true));
+                make_move.write(MakeMove(m, true));
             }
             return;
         }
@@ -254,16 +278,16 @@ fn on_stage_move(
                 to: (pos.rank, pos.file),
                 promotion: None,
             };
-            if let Some(piece) = board[current]
+            if let Some(piece) = state.board[current.tuple()]
                 && piece.kind == Kind::Pawn
                 && (pos.rank == 0 || pos.rank == 7)
             {
                 m.promotion = Some(Kind::Queen);
             }
 
-            if m.check(&board).is_ok() {
+            if m.check(&state.board).is_ok() {
                 *vis = Visibility::Inherited;
-                if board[*pos].is_some() {
+                if state.board[pos.tuple()].is_some() {
                     sprite.image = assets.load("take.png");
                 } else {
                     sprite.image = assets.load("move.png");
@@ -277,6 +301,7 @@ fn on_promote(
     ev: On<Promote>,
     pieces: Query<&BoardPosition>,
     state: Res<ClientState>,
+    mut make_move: MessageWriter<MakeMove>,
     mut commands: Commands,
 ) {
     let MoveState::Promote { from, to } = state.move_state else {
@@ -285,7 +310,7 @@ fn on_promote(
     let from = pieces.get(from).unwrap();
     let to = pieces.get(to).unwrap();
 
-    commands.trigger(MakeMove(
+    make_move.write(MakeMove(
         ChessMove {
             from: (from.rank, from.file),
             to: (to.rank, to.file),
@@ -297,24 +322,25 @@ fn on_promote(
 }
 
 fn on_make_move(
-    m: On<MakeMove>,
-    mut board: ResMut<ChessBoard>,
+    mut m: ResMut<Messages<MakeMove>>,
     mut writer: MessageWriter<SyncBoard>,
     mut session: Single<&mut Session>,
     mut state: ResMut<ClientState>,
 ) {
-    m.0.exec(&mut board);
-    writer.write(SyncBoard);
-    if m.1 {
-        session.send.push(
-            serde_json::to_vec(&ClientMessage::Move(m.0))
-                .unwrap()
-                .into(),
-        );
-    }
+    for m in m.drain() {
+        m.0.exec(&mut state.board);
+        writer.write(SyncBoard);
+        if m.1 {
+            session.send.push(
+                serde_json::to_vec(&ClientMessage::Move(m.0))
+                    .unwrap()
+                    .into(),
+            );
+        }
 
-    state.move_state = MoveState::None;
-    state.move_allowed = board.turn == state.color;
+        state.move_state = MoveState::None;
+        state.move_allowed = state.board.turn == state.color;
+    }
 }
 
 fn on_square_clicked(click: On<Pointer<Click>>, mut commands: Commands) {
@@ -335,7 +361,7 @@ fn on_play(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut writer: MessageWriter<SyncBoard>,
-    mut board: ResMut<ChessBoard>,
+    mut server: ResMut<ServerBoard>,
     mut client: ResMut<ClientState>,
 ) {
     client.color = if play.is_white {
@@ -346,7 +372,9 @@ fn on_play(
     client.room = play.room;
     client.move_allowed = false;
     client.move_state = MoveState::None;
-    board.board = Board::new();
+    client.board = Board::new();
+    client.connected = false;
+    server.board = Board::new();
     let square = meshes.add(Rectangle::new(64.0, 64.0));
     let white = materials.add(Color::WHITE);
     let black = materials.add(Color::from(css::BROWN));
@@ -411,36 +439,16 @@ fn despawn_board(tiles: Query<Entity, With<Pickable>>, mut commands: Commands) {
 #[derive(Message)]
 pub struct GameEnded(pub i32);
 
-fn process_event(
-    ev: &ChessEvent,
-    state: &mut ClientState,
-    board: &Board,
-    commands: &mut Commands,
-    ended: &mut MessageWriter<GameEnded>,
-) {
+fn process_event(ev: &ChessEvent, board: &mut Board) {
     match ev {
         ChessEvent::Move(mv) => {
-            // This is kind of a hack
-            if board[mv.from].is_none() {
-                return;
-            }
-
-            commands.trigger(MakeMove(*mv, false));
-            state.move_allowed = board.turn == state.color;
+            mv.exec(board);
         }
-        ChessEvent::GameEnded => {
-            ended.write(GameEnded(state.room));
-        }
+        _ => (),
     }
 }
 
-fn process_msgs(
-    mut session: Single<&mut Session>,
-    mut commands: Commands,
-    mut state: ResMut<ClientState>,
-    board: Res<ChessBoard>,
-    mut ended: MessageWriter<GameEnded>,
-) {
+fn process_msgs(mut session: Single<&mut Session>, mut board: ResMut<ServerBoard>) {
     for msg in session.recv.drain(..) {
         let msg: ChessMessage = serde_json::from_slice(msg.payload.as_ref()).unwrap();
         tracing::info!("Received {msg:?}");
@@ -448,13 +456,11 @@ fn process_msgs(
         match msg {
             ChessMessage::Sync(events) => {
                 for ev in events.as_ref() {
-                    process_event(ev, &mut state, &board.board, &mut commands, &mut ended);
+                    process_event(ev, &mut board.board);
                 }
-
-                state.move_allowed = board.turn == state.color;
             }
             ChessMessage::Event(ev) => {
-                process_event(&ev, &mut state, &board.board, &mut commands, &mut ended);
+                process_event(&ev, &mut board.board);
             }
             ChessMessage::MoveError => panic!("something must have gone terribly wrong"),
         }
@@ -465,30 +471,40 @@ fn disconnect(session: Single<Entity, With<Session>>, mut commands: Commands) {
     commands.trigger(Disconnect::new(session.entity(), "client disconnected"));
 }
 
-fn on_disconnect(ev: On<Disconnected>) {
+fn on_disconnect(ev: On<Disconnected>, mut client: ResMut<ClientState>) {
+    client.connected = true;
     tracing::info!("Disconnected: {:?}", ev.reason);
 }
 
-fn on_connect(_: On<Add, Session>) {
+fn on_connect(_: On<Add, Session>, mut client: ResMut<ClientState>) {
+    client.connected = true;
     tracing::info!("Connected");
 }
 
 pub fn plugin(app: &mut App) {
     app.add_plugins((MeshPickingPlugin, WebSocketClientPlugin, ui::plugin))
-        .add_systems(Update, (sync_board, process_msgs))
+        .add_systems(
+            Update,
+            (
+                sync_ui.after(sync_board),
+                sync_board,
+                process_msgs,
+                on_make_move,
+            ),
+        )
         .add_systems(OnExit(super::State::Game), (disconnect, despawn_board))
-        .insert_resource(ChessBoard {
+        .insert_resource(ServerBoard {
             board: Board::new(),
         })
         .insert_resource(SelectedSquare(None))
         .init_resource::<ClientState>()
         .add_observer(on_play)
         .add_observer(on_square_selected)
-        .add_observer(on_make_move)
         .add_observer(on_stage_move)
         .add_observer(on_promote)
         .add_observer(on_disconnect)
         .add_observer(on_connect)
         .add_message::<GameEnded>()
+        .add_message::<MakeMove>()
         .add_message::<SyncBoard>();
 }

@@ -4,8 +4,9 @@ use std::{
     borrow::Cow,
     hash::{DefaultHasher, Hash as _, Hasher},
     net::IpAddr,
+    ops::ControlFlow,
     sync::{Arc, atomic::AtomicUsize},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -26,7 +27,10 @@ use futures::lock::Mutex;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use tokio::sync::broadcast;
+use tokio::{
+    sync::broadcast,
+    time::{interval, sleep},
+};
 use tower_http::trace::TraceLayer;
 
 use crate::state_set::StateSet;
@@ -376,6 +380,10 @@ impl Connection {
             .await
     }
 
+    async fn ping(&mut self) -> Result<(), axum::Error> {
+        self.0.send(ws::Message::Ping(vec![].into())).await
+    }
+
     async fn recv(&mut self) -> Option<ClientMessage> {
         self.0
             .recv()
@@ -384,12 +392,62 @@ impl Connection {
             .and_then(|v| v.into_text().ok())
             .and_then(|v| serde_json::from_slice(v.as_bytes()).ok())
     }
+
+    async fn close(&mut self) -> Result<(), axum::Error> {
+        self.0.send(ws::Message::Close(None)).await
+    }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         WEBSOCKET_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Release);
     }
+}
+
+async fn handle_msg(
+    msg: Option<ClientMessage>,
+    socket: &mut Connection,
+    table: &Mutex<Table>,
+    room: i32,
+    color: Color,
+    app_state: &AppState,
+) -> ControlFlow<()> {
+    let Some(msg) = msg else {
+        return ControlFlow::Break(());
+    };
+
+    match msg {
+        ClientMessage::Move(mv) => {
+            let mut table = table.lock().await;
+
+            if table.board[mv.from].is_none_or(|v| v.color != color)
+                || mv.check(&table.board).is_err()
+            {
+                tracing::debug!("erroneous move {mv:?}");
+                socket.send(&ChessMessage::MoveError).await.ok();
+                return ControlFlow::Continue(());
+            }
+
+            // This order is necessary for clients to properly connect (so that no move is skipped)
+            let res = sqlx::query!(
+                "INSERT INTO event (room_id, payload) VALUES ($1, $2);",
+                room,
+                serde_json::to_value(ChessEvent::Move(mv)).expect("move serialization failed")
+            )
+            .execute(&app_state.pool)
+            .await;
+
+            if let Err(err) = res {
+                tracing::error!("Sqlx call failed: {err:?}, aborting");
+                return ControlFlow::Break(());
+            }
+
+            // Move is ok now, we can make it
+            table.process(ChessEvent::Move(mv), true);
+        }
+    }
+
+    ControlFlow::Continue(())
 }
 
 async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_white: bool) {
@@ -415,7 +473,7 @@ async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_
             .maybe_insert(room, Arc::new(Mutex::new(table)))
     };
 
-    tracing::info!("room {room} loaded state");
+    tracing::debug!("room {room} loaded state");
 
     // Sync the new guy
     let mut receiver = {
@@ -430,51 +488,36 @@ async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_
         table.sender.subscribe()
     };
 
-    tracing::info!("room {room} sync sent");
+    tracing::debug!("room {room} sync sent");
+
+    let mut ping = interval(Duration::from_secs(30));
+    let timeout = sleep(Duration::from_secs(30 * 60));
+    tokio::pin!(timeout);
 
     // Handle moves/events
     loop {
-        tokio::select! {
-            msg = socket.recv() => {
-                let Some(msg) = msg else {
+        let flow = tokio::select! {
+            _ = ping.tick() => {
+                if socket.ping().await.is_err() {
                     break;
-                };
-
-                match msg {
-                    ClientMessage::Move(mv) => {
-                        let mut table = table.lock().await;
-
-                        if table.board[mv.from].is_none_or(|v| v.color != color) || mv.check(&table.board).is_err() {
-                            tracing::debug!("erroneous move {mv:?}");
-                            socket
-                                .send(&ChessMessage::MoveError)
-                                .await
-                                .ok();
-                            continue;
-                        }
-
-                        // This order is necessary for clients to properly connect (so that no move is skipped)
-                        let res = sqlx::query!(
-                            "INSERT INTO event (room_id, payload) VALUES ($1, $2);",
-                            room,
-                            serde_json::to_value(ChessEvent::Move(mv)).expect("move serialization failed")
-                        )
-                            .execute(&app_state.pool)
-                            .await;
-
-                        if let Err(err) = res {
-                            tracing::error!("Sqlx call failed: {err:?}, aborting");
-                            break;
-                        }
-
-                        // Move is ok now, we can make it
-                        table.process(ChessEvent::Move(mv), true);
-                    }
                 }
+
+                ControlFlow::Continue(())
             }
+            msg = socket.recv() => handle_msg(msg, &mut socket, &table, room, color, &app_state).await,
             ev = receiver.recv() => {
                 let Ok(()) = socket.send(&ChessMessage::Event(ev.unwrap())).await else {return;};
+                ControlFlow::Continue(())
             }
+
+            _ = &mut timeout => {
+                socket.close().await.ok();
+                return;
+            }
+        };
+
+        if flow.is_break() {
+            break;
         }
     }
 

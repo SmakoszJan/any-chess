@@ -1,12 +1,12 @@
 use bevy::{
-    color::palettes::css,
+    color::palettes::css::{self, RED},
     picking::hover::Hovered,
     prelude::*,
     ui_widgets::{Activate, Button, observe},
 };
 use chess_core::Kind;
 
-use crate::board::{ChessBoard, ClientState};
+use crate::board::ClientState;
 
 #[derive(Component)]
 struct PromotionUi;
@@ -95,6 +95,9 @@ pub struct Victory;
 #[derive(Component)]
 pub struct YourColor;
 
+#[derive(Component)]
+pub struct DisconnectedStatus;
+
 #[derive(Message)]
 pub struct GoBack;
 
@@ -119,6 +122,12 @@ fn spawn_info(mut commands: Commands) {
                     ev.write(GoBack);
                 }),
             ));
+            parent.spawn((
+                Text::new("Disconnected"),
+                TextColor(RED.into()),
+                Visibility::Hidden,
+                DisconnectedStatus,
+            ));
         });
 }
 
@@ -127,13 +136,13 @@ fn despawn_info(mut commands: Commands, ui: Single<Entity, With<GameInfo>>) {
 }
 
 fn update_info(
-    board: Res<ChessBoard>,
     state: Res<ClientState>,
     mut your_color: Single<&mut Text, (With<YourColor>, Without<WhoseTurn>, Without<Victory>)>,
     mut whose_turn: Single<&mut Text, (With<WhoseTurn>, Without<YourColor>, Without<Victory>)>,
     mut victory: Single<&mut Text, (With<Victory>, Without<WhoseTurn>, Without<YourColor>)>,
+    mut disconnected: Single<&mut Visibility, With<DisconnectedStatus>>,
 ) {
-    if board.is_changed() {
+    if state.is_changed() {
         **your_color = Text(format!(
             "You play as {}",
             match state.color {
@@ -143,17 +152,23 @@ fn update_info(
         ));
         **whose_turn = Text(format!(
             "It's {} turn",
-            if state.color == board.turn {
+            if state.color == state.board.turn {
                 "your"
             } else {
                 "your opponent's"
             }
         ));
 
-        if let Some(color) = board.victory {
+        if let Some(color) = state.board.victory {
             **victory = Text(format!("{color:?} won!"));
         } else {
             **victory = Text::default();
+        }
+
+        if state.connected {
+            **disconnected = Visibility::Hidden;
+        } else {
+            **disconnected = Visibility::Inherited;
         }
     }
 }

@@ -237,6 +237,7 @@ impl Display for Piece {
     }
 }
 
+#[derive(Clone)]
 pub struct Board {
     state: [Option<Piece>; 64],
     pub turn: Color,
@@ -270,7 +271,7 @@ impl Board {
 impl Display for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for rank in 0..8 {
-            for file in 0..7 {
+            for file in 0..8 {
                 match self[(7 - rank, file)] {
                     Some(p) => write!(f, "{p}"),
                     None => write!(f, "."),
