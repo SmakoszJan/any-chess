@@ -315,7 +315,7 @@ async fn play(
     .fetch_one(&state.pool)
     .await?;
     if exists != Some(true) {
-        return Err(Error::NotFound);
+        return Err(Error::Gone);
     }
 
     Ok(jsonwebtoken::encode(
