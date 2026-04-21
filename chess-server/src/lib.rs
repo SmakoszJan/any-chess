@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::{
     sync::broadcast,
-    time::{interval, sleep},
+    time::{Instant, interval, sleep},
 };
 use tower_http::trace::TraceLayer;
 
@@ -385,12 +385,14 @@ impl Connection {
     }
 
     async fn recv(&mut self) -> Option<ClientMessage> {
-        self.0
-            .recv()
-            .await?
-            .ok()
-            .and_then(|v| v.into_text().ok())
-            .and_then(|v| serde_json::from_slice(v.as_bytes()).ok())
+        loop {
+            let msg = self.0.recv().await?.ok()?.into_text().ok()?;
+            if msg.is_empty() {
+                continue;
+            }
+
+            return serde_json::from_slice(msg.as_bytes()).ok();
+        }
     }
 
     async fn close(&mut self) -> Result<(), axum::Error> {
@@ -504,7 +506,10 @@ async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_
 
                 ControlFlow::Continue(())
             }
-            msg = socket.recv() => handle_msg(msg, &mut socket, &table, room, color, &app_state).await,
+            msg = socket.recv() => {
+                timeout.as_mut().reset(Instant::now() + Duration::from_secs(30 * 60));
+                handle_msg(msg, &mut socket, &table, room, color, &app_state).await
+            }
             ev = receiver.recv() => {
                 let Ok(()) = socket.send(&ChessMessage::Event(ev.unwrap())).await else {return;};
                 ControlFlow::Continue(())

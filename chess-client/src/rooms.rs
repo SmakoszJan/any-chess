@@ -343,10 +343,18 @@ fn despawn_ui(menu: Single<Entity, With<MainMenu>>, mut commands: Commands) {
 fn save_rooms(rooms: Res<MyRooms>) {
     if rooms.is_changed() {
         let path = dirs::data_dir().unwrap();
-        let path = path.join(if std::env::var("TEST").is_ok() {
-            "anychess-test"
+        let path = path.join(if cfg!(debug_assertions) {
+            if std::env::var("TEST").is_ok() {
+                "anychess-dbg-test"
+            } else {
+                "anychess-dbg"
+            }
         } else {
-            "anychess"
+            if std::env::var("TEST").is_ok() {
+                "anychess-test"
+            } else {
+                "anychess"
+            }
         });
 
         fs::create_dir_all(&path).unwrap();
@@ -356,10 +364,18 @@ fn save_rooms(rooms: Res<MyRooms>) {
 
 fn load_rooms(mut rooms: ResMut<MyRooms>, mut commands: Commands) {
     let path = dirs::data_dir().unwrap();
-    let path = path.join(if std::env::var("TEST").is_ok() {
-        "anychess-test"
+    let path = path.join(if cfg!(debug_assertions) {
+        if std::env::var("TEST").is_ok() {
+            "anychess-dbg-test"
+        } else {
+            "anychess-dbg"
+        }
     } else {
-        "anychess"
+        if std::env::var("TEST").is_ok() {
+            "anychess-test"
+        } else {
+            "anychess"
+        }
     });
 
     if let Ok(file) = File::open(path.join("rooms.json")) {

@@ -450,6 +450,10 @@ fn process_event(ev: &ChessEvent, board: &mut Board) {
 
 fn process_msgs(mut session: Single<&mut Session>, mut board: ResMut<ServerBoard>) {
     for msg in session.recv.drain(..) {
+        println!("Received {}", String::from_utf8_lossy(msg.payload.as_ref()));
+        if msg.payload.is_empty() {
+            continue;
+        }
         let msg: ChessMessage = serde_json::from_slice(msg.payload.as_ref()).unwrap();
         tracing::info!("Received {msg:?}");
 
