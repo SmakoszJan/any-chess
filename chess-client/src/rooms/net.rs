@@ -5,9 +5,9 @@ use chess_core::net::{Room, RoomPlayer};
 use http_for_bevy::{Headers, prelude::*};
 use serde::{Deserialize, Serialize};
 
-// #[cfg(debug_assertions)]
-// const URL: &str = "http://0.0.0.0:3000";
-// #[cfg(not(debug_assertions))]
+#[cfg(debug_assertions)]
+const URL: &str = "http://0.0.0.0:3000";
+#[cfg(not(debug_assertions))]
 const URL: &str = "http://164.92.131.129";
 
 #[derive(Serialize)]

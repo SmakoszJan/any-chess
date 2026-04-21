@@ -16,9 +16,9 @@ use ui::{HideUi, Promote, ShowUi};
 
 mod ui;
 
-// #[cfg(debug_assertions)]
-// const WS_URL: &str = "ws://0.0.0.0:3000";
-// #[cfg(not(debug_assertions))]
+#[cfg(debug_assertions)]
+const WS_URL: &str = "ws://0.0.0.0:3000";
+#[cfg(not(debug_assertions))]
 const WS_URL: &str = "ws://164.92.131.129";
 
 #[derive(Message)]
