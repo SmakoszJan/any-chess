@@ -45,7 +45,9 @@ fn setup(assets: Res<AssetServer>, mut commands: Commands) {
         });
 }
 
-fn hover_color(buttons: Query<(&mut BackgroundColor, &Hovered), (With<Button>, Changed<Hovered>)>) {
+fn hover_color(
+    buttons: Query<(&mut BackgroundColor, &Hovered), (With<Promote>, Changed<Hovered>)>,
+) {
     for (mut col, hov) in buttons {
         if hov.0 {
             col.0 = Color::from(css::BLUE);
