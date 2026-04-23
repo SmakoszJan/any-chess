@@ -5,7 +5,7 @@ use std::{
 };
 
 use bevy::{
-    color::palettes::css::{self, GRAY, WHITE},
+    color::palettes::css::{self, GRAY},
     input_focus::{AcquireFocus, InputFocus, tab_navigation::TabIndex},
     picking::hover::Hovered,
     prelude::*,
@@ -18,10 +18,9 @@ use bevy_simple_text_input::{
 };
 use chess_core::net::RoomPlayer;
 use http_for_bevy::HttpRequest;
-use net::ReloadRooms;
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::net::{CreateRoom, PlayRoom, RoomDeleted, RoomJoined};
+use crate::rooms::net::{CreateRoom, RoomDeleted, RoomJoined};
 
 mod net;
 
@@ -159,18 +158,9 @@ fn render_my_rooms(
     }
 }
 
-fn on_room_joined(
-    mut ev: ResMut<Messages<RoomJoined>>,
-    mut rooms: ResMut<MyRooms>,
-    mut commands: Commands,
-) {
-    let is_empty = ev.is_empty();
+fn on_room_joined(mut ev: ResMut<Messages<RoomJoined>>, mut rooms: ResMut<MyRooms>) {
     for ev in ev.drain() {
         rooms.push(ev.0);
-    }
-
-    if !is_empty {
-        commands.trigger(HttpRequest(ReloadRooms));
     }
 }
 
@@ -316,8 +306,6 @@ fn spawn_ui(mut commands: Commands, mut rooms: ResMut<MyRooms>) {
                         });
                 });
         });
-
-    commands.trigger(HttpRequest(ReloadRooms));
 }
 
 fn despawn_ui(menu: Single<Entity, With<MainMenu>>, mut commands: Commands) {
@@ -346,7 +334,7 @@ fn save_rooms(rooms: Res<MyRooms>) {
     }
 }
 
-fn load_rooms(mut rooms: ResMut<MyRooms>, mut commands: Commands) {
+fn load_rooms(mut rooms: ResMut<MyRooms>) {
     let path = dirs::data_dir().unwrap();
     let path = path.join(if cfg!(debug_assertions) {
         if std::env::var("TEST").is_ok() {
@@ -365,8 +353,6 @@ fn load_rooms(mut rooms: ResMut<MyRooms>, mut commands: Commands) {
     if let Ok(file) = File::open(path.join("rooms.json")) {
         *rooms = serde_json::from_reader(file).unwrap();
     }
-
-    commands.trigger(HttpRequest(ReloadRooms));
 }
 
 #[derive(Event)]

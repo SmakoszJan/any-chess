@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use chess_core::net::{Room, RoomPlayer};
+use chess_core::net::RoomPlayer;
 use http_for_bevy::{Headers, prelude::*};
 use serde::{Deserialize, Serialize};
 
@@ -86,39 +86,6 @@ pub struct PlayToken {
     pub room: i32,
 }
 
-#[derive(Serialize)]
-pub struct ReloadRooms;
-
-impl RequestType for ReloadRooms {
-    type Extra = ();
-    type Response = ReceivedRooms;
-    const METHOD: Method = Method::GET;
-
-    fn endpoint<'r>(&'r self) -> impl ToString {
-        format!("{URL}/rooms")
-    }
-
-    fn extra(&self) -> Self::Extra {}
-}
-
-#[derive(Message, Deserialize, Clone, Debug)]
-pub struct ReceivedRooms(pub Vec<Room>);
-
-fn on_received_rooms(
-    mut ev: MessageReader<HttpResponse<ReloadRooms>>,
-    mut out: MessageWriter<ReceivedRooms>,
-) {
-    for ev in ev.read() {
-        // This should always be fine.
-        if ev.status != 200 {
-            tracing::error!("HTTP error from {}: {:?}", ev.url, ev.text());
-            continue;
-        }
-
-        out.write(ev.json().unwrap());
-    }
-}
-
 fn on_room_created(
     mut ev: MessageReader<HttpResponse<CreateRoom>>,
     mut out: MessageWriter<RoomJoined>,
@@ -181,19 +148,15 @@ pub fn plugin(app: &mut App) {
         .add_systems(
             Update,
             (
-                on_received_rooms,
-                on_errors::<ReceivedRooms>,
                 on_errors::<Arc<RoomPlayer>>,
                 on_room_created,
                 on_room_joined,
                 on_room_played,
             ),
         )
-        .add_message::<ReceivedRooms>()
         .add_message::<RoomJoined>()
         .add_message::<PlayToken>()
         .add_message::<RoomDeleted>()
-        .add_request_type::<ReloadRooms>()
         .add_request_type::<CreateRoom>()
         .add_request_type::<JoinRoom>()
         .add_request_type::<PlayRoom>();
