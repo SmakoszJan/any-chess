@@ -158,6 +158,10 @@ pub mod tests {
         let mut board = Board::from_str("////p//1P").unwrap();
 
         ChessMove::new((1, 1), (3, 1)).exec(&mut board);
+        assert_eq!(
+            ChessMove::new((3, 0), (2, 0)).check(&board),
+            Err(ChessError::EnPassant)
+        );
         let m = ChessMove::new((3, 0), (2, 1));
         m.check(&board).unwrap();
         m.exec(&mut board);
@@ -412,6 +416,8 @@ pub enum ChessError {
     OnlyMoveYourColor,
     Promotion,
     AlreadyWon,
+    // En passant is forced
+    EnPassant,
 }
 
 impl Move for ChessMove {
@@ -445,6 +451,50 @@ impl Move for ChessMove {
             && target.color == piece.color
         {
             return Err(ChessError::TakeOwn);
+        }
+
+        // Forced en passant
+        if let Some(en_passant) = state.en_passant {
+            // Verify that en passant can be performed.
+            let rank = (en_passant.0 as i32
+                + match state.turn {
+                    Color::White => -1,
+                    Color::Black => 1,
+                }) as usize;
+
+            let left = (en_passant.1 != 0).then_some((rank, en_passant.1 - 1));
+            let right = (en_passant.1 != 7).then_some((rank, en_passant.1 + 1));
+
+            // If at any of the candidates there is a current-colored pawn, en passant is possible.
+            let possible = if let Some(left) = left
+                && let Some(piece) = state[left]
+                && piece.color == state.turn
+                && piece.kind == Kind::Pawn
+            {
+                true
+            } else if let Some(right) = right
+                && let Some(piece) = state[right]
+                && piece.color == state.turn
+                && piece.kind == Kind::Pawn
+            {
+                true
+            } else {
+                false
+            };
+
+            if possible {
+                // We can now check if the move is en passant
+                let err = Err(ChessError::EnPassant);
+                if self.to != en_passant {
+                    return err;
+                }
+
+                if let Some(piece) = state[self.from]
+                    && piece.kind != Kind::Pawn
+                {
+                    return err;
+                }
+            }
         }
 
         // Verify pattern
