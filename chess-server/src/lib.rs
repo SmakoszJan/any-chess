@@ -21,7 +21,7 @@ use axum::{
 };
 use chess_core::{
     Board, Color, Move,
-    net::{ChessEvent, ChessMessage, ClientMessage, CreateRoom, Room, RoomPlayer},
+    net::{ChessEvent, ChessMessage, ClientMessage, RoomPlayer},
 };
 use futures::lock::Mutex;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
@@ -133,13 +133,13 @@ pub async fn serve() -> Result<(), Error> {
     let secret: Arc<str> = Arc::from(secret);
     let secret_bytes = secret.as_bytes();
     let app = Router::new()
-        .route("/rooms", get(get_rooms).post(create_room))
-        .route("/rooms/{id}/join", post(join_room))
+        .route("/", get(async || StatusCode::OK))
+        .route("/rooms", post(create_room))
+        .route("/rooms/match", post(match_room))
+        .route("/rooms/{code}", post(join_room))
         .route("/rooms/{id}/play", get(play))
         .route("/connect", get(connect))
         .route("/prune", post(prune))
-        .route("/kaithhealth", get(health))
-        .route("/kaithheathcheck", get(health))
         .with_state(AppState {
             pool,
             encode_key: EncodingKey::from_secret(secret_bytes),
@@ -156,26 +156,12 @@ pub async fn serve() -> Result<(), Error> {
     Ok(())
 }
 
-async fn health() -> StatusCode {
-    StatusCode::OK
-}
-
-async fn get_rooms(State(state): State<AppState>) -> Result<Json<Vec<Room>>, Error> {
-    Ok(Json(
-        sqlx::query_as!(
-            Room,
-            "SELECT room_id AS id, name FROM room WHERE open=true;"
-        )
-        .fetch_all(&state.pool)
-        .await?,
-    ))
-}
-
 #[derive(Serialize, Deserialize)]
 struct PlayerClaims {
     room: i32,
     is_white: bool,
     exp: u64,
+    code: Option<String>,
 }
 
 #[derive(Hash)]
@@ -184,10 +170,11 @@ struct Obscured<'r> {
     secret: &'r str,
 }
 
+const CHARSET: &[u8] = b"bcdfghjklmnpqrstvwxyz23456789";
+
 async fn create_room(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(room): Json<CreateRoom>,
 ) -> Result<Json<RoomPlayer>, Error> {
     let ip = client_ip::x_real_ip(&headers).ok().map(|ip| {
         let data = Obscured {
@@ -200,19 +187,36 @@ async fn create_room(
     });
 
     let is_white = rand::random_bool(0.5);
-    let id = sqlx::query_scalar!(
-        "INSERT INTO room (white_taken, name, open, created_by)
-            SELECT $1, $2, true, $3
-            WHERE (
-                SELECT COUNT(*) FROM room WHERE created_by=$3
-            ) < 100
-        RETURNING room_id;",
-        is_white,
-        room.0,
-        ip
-    )
-    .fetch_optional(&state.pool)
-    .await?;
+    let mut code = String::new();
+    let id = loop {
+        let chars = rand::random_iter::<u8>()
+            .take(5)
+            .map(|i| CHARSET[i as usize % CHARSET.len()] as char);
+        code.clear();
+        code.extend(chars);
+        let id = sqlx::query_scalar!(
+            "INSERT INTO room (white_taken, open, created_by, entry_code)
+                SELECT $1, true, $2, $3
+                WHERE (
+                    SELECT COUNT(*) FROM room WHERE created_by=$2
+                ) < 100
+            RETURNING room_id;",
+            is_white,
+            ip,
+            code.as_str()
+        )
+        .fetch_optional(&state.pool)
+        .await;
+
+        if !id.as_ref().is_err_and(|err| {
+            err.as_database_error()
+                .is_some_and(|v| v.is_unique_violation())
+        }) {
+            continue;
+        }
+
+        break id?;
+    };
 
     let Some(id) = id else {
         return Err(Error::Rejected);
@@ -224,31 +228,30 @@ async fn create_room(
             room: id,
             is_white,
             exp: u64::MAX,
+            code: Some(code),
         },
         &state.encode_key,
     )?;
     Ok(Json(RoomPlayer {
         id,
         is_white,
-        name: room.0.unwrap_or_default(),
         token,
     }))
 }
 
 struct JoinResult {
+    room_id: i32,
     white_taken: bool,
-    name: Option<String>,
 }
 
 async fn join_room(
-    Path(room): Path<i32>,
+    Path(code): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<RoomPlayer>, Error> {
-    tracing::info!("Does this work?");
     let result = sqlx::query_as!(
         JoinResult,
-        "UPDATE room SET open=false WHERE room_id=$1 AND open=true RETURNING white_taken, name;",
-        room
+        "UPDATE room SET open=false WHERE entry_code=$1 AND open=true RETURNING room_id, white_taken;",
+        code
     )
     .fetch_optional(&state.pool)
     .await?;
@@ -257,20 +260,96 @@ async fn join_room(
         let token = jsonwebtoken::encode(
             &Header::default(),
             &PlayerClaims {
-                room,
+                room: result.room_id,
                 is_white: !result.white_taken,
                 exp: u64::MAX,
+                code: Some(code),
             },
             &state.encode_key,
         )?;
         Ok(Json(RoomPlayer {
-            id: room,
+            id: result.room_id,
             is_white: !result.white_taken,
-            name: result.name.unwrap_or_default(),
             token,
         }))
     } else {
         Err(Error::NotFound)
+    }
+}
+
+async fn match_room(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Json<RoomPlayer>, Error> {
+    let result = sqlx::query_as!(
+        JoinResult,
+        "UPDATE room SET open=false WHERE entry_code is NULL AND open=true RETURNING room_id, white_taken;"
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if let Some(result) = result {
+        // If exists, join
+        let token = jsonwebtoken::encode(
+            &Header::default(),
+            &PlayerClaims {
+                room: result.room_id,
+                is_white: !result.white_taken,
+                exp: u64::MAX,
+                code: None,
+            },
+            &state.encode_key,
+        )?;
+        Ok(Json(RoomPlayer {
+            id: result.room_id,
+            is_white: !result.white_taken,
+            token,
+        }))
+    } else {
+        // Otherwise, create
+        let ip = client_ip::x_real_ip(&headers).ok().map(|ip| {
+            let data = Obscured {
+                ip,
+                secret: &state.secret,
+            };
+            let mut s = DefaultHasher::default();
+            data.hash(&mut s);
+            s.finish() as i64
+        });
+
+        let is_white = rand::random_bool(0.5);
+        let id = sqlx::query_scalar!(
+            "INSERT INTO room (white_taken, open, created_by)
+                SELECT $1, true, $2
+                WHERE (
+                    SELECT COUNT(*) FROM room WHERE created_by=$2
+                ) < 100
+            RETURNING room_id;",
+            is_white,
+            ip,
+        )
+        .fetch_optional(&state.pool)
+        .await?;
+
+        let Some(id) = id else {
+            return Err(Error::Rejected);
+        };
+
+        let token = jsonwebtoken::encode(
+            &Header::default(),
+            &PlayerClaims {
+                room: id,
+                is_white,
+                exp: u64::MAX,
+                code: None,
+            },
+            &state.encode_key,
+        )?;
+        Ok(Json(RoomPlayer {
+            id,
+            is_white,
+            token,
+        }))
     }
 }
 
