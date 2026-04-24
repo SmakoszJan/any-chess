@@ -14,12 +14,10 @@ pub struct Room {
 pub struct RoomPlayer {
     pub id: i32,
     pub is_white: bool,
-    pub name: String,
     pub token: String,
+    pub connection_token: String,
+    pub code: Option<String>,
 }
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct CreateRoom(pub Option<String>);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ChessMessage<'r> {
@@ -35,6 +33,7 @@ pub enum ClientMessage {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum ChessEvent {
+    Start,
     Move(ChessMove),
     GameEnded,
 }

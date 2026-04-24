@@ -2,66 +2,18 @@ use aeronet_io::{
     Session,
     connection::{Disconnect, Disconnected},
 };
-use aeronet_websocket::client::{ClientConfig, WebSocketClient, WebSocketClientPlugin};
+use aeronet_websocket::client::WebSocketClientPlugin;
 use bevy::{color::palettes::css, ecs::query::QueryData, prelude::*};
-use chess_core::{
-    Board, ChessMove, Color as ChessColor, Kind, Move, Piece,
-    net::{ChessEvent, ChessMessage, ClientMessage},
-};
+use chess_core::{Board, ChessMove, Color as ChessColor, Kind, Move, net::ClientMessage};
 
-use std::ops::{Deref, DerefMut, Index};
-
-pub use ui::GoBack;
 use ui::{HideUi, Promote, ShowUi};
+
+use crate::net::{BoardPosition, RoomInfo, ServerBoard};
 
 mod ui;
 
-#[cfg(debug_assertions)]
-const WS_URL: &str = "ws://0.0.0.0:3000";
-#[cfg(not(debug_assertions))]
-const WS_URL: &str = "ws://164.92.131.129";
-
 #[derive(Message)]
 struct SyncBoard;
-
-#[derive(Component, Clone, Copy)]
-struct BoardPosition {
-    rank: usize,
-    file: usize,
-}
-
-impl BoardPosition {
-    fn tuple(self) -> (usize, usize) {
-        (self.rank, self.file)
-    }
-}
-
-#[derive(Resource)]
-struct ServerBoard {
-    board: Board,
-}
-
-impl Deref for ServerBoard {
-    type Target = Board;
-
-    fn deref(&self) -> &Self::Target {
-        &self.board
-    }
-}
-
-impl DerefMut for ServerBoard {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.board
-    }
-}
-
-impl Index<BoardPosition> for ServerBoard {
-    type Output = Option<Piece>;
-
-    fn index(&self, index: BoardPosition) -> &Self::Output {
-        &self.board[(index.rank, index.file)]
-    }
-}
 
 #[derive(Component)]
 struct PieceMarker;
@@ -76,8 +28,8 @@ fn sync_board(
     mut commands: Commands,
 ) {
     if board.is_changed() {
-        state.board.clone_from(&board.board);
-        state.move_allowed = board.board.turn == state.color;
+        state.board.clone_from(&board);
+        state.move_allowed = board.turn == state.color;
         commands.trigger(StageMove(None));
         writer.write(SyncBoard);
     }
@@ -164,6 +116,9 @@ struct Square {
     t: &'static GlobalTransform,
 }
 
+const WHITE: Color = Color::srgb_u8(0xf0, 0xd9, 0xb5);
+const BLACK: Color = Color::srgb_u8(0xb5, 0x88, 0x63);
+
 fn on_square_selected(
     trigger: On<SelectSquare>,
     mut squares: Query<Square, Without<PieceMarker>>,
@@ -175,9 +130,9 @@ fn on_square_selected(
         && let Ok(mut sq) = squares.get_mut(current)
     {
         sq.color.0 = materials.add(if (sq.pos.rank + sq.pos.file) % 2 == 0 {
-            Color::from(css::BROWN)
+            BLACK
         } else {
-            Color::WHITE
+            WHITE
         });
     }
 
@@ -348,39 +303,25 @@ fn on_square_clicked(click: On<Pointer<Click>>, mut commands: Commands) {
     commands.trigger(StageMove(Some(click.entity)));
 }
 
-#[derive(Event)]
-pub struct Play {
-    pub token: String,
-    pub is_white: bool,
-    pub room: i32,
-}
-
-fn on_play(
-    play: On<Play>,
+fn spawn_board(
+    room: Res<RoomInfo>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut writer: MessageWriter<SyncBoard>,
-    mut server: ResMut<ServerBoard>,
     mut client: ResMut<ClientState>,
 ) {
-    client.color = if play.is_white {
-        ChessColor::White
-    } else {
-        ChessColor::Black
-    };
-    client.room = play.room;
+    client.color = room.color;
+    client.room = room.room;
     client.move_allowed = false;
     client.move_state = MoveState::None;
     client.board = Board::new();
-    client.connected = false;
-    server.board = Board::new();
     let square = meshes.add(Rectangle::new(64.0, 64.0));
-    let white = materials.add(Color::WHITE);
-    let black = materials.add(Color::from(css::BROWN));
+    let white = materials.add(WHITE);
+    let black = materials.add(BLACK);
 
-    let mut x = if play.is_white { -224.0 } else { 224.0 };
-    let mut y = if play.is_white { -224.0 } else { 224.0 };
+    let mut x = if room.color.is_white() { -224.0 } else { 224.0 };
+    let mut y = if room.color.is_white() { -224.0 } else { 224.0 };
     for rank in 0..8 {
         for file in 0..8 {
             commands
@@ -410,32 +351,23 @@ fn on_play(
                         Visibility::Hidden,
                     ));
                 });
-            if play.is_white {
+            if room.color.is_white() {
                 x += 64.0;
             } else {
                 x -= 64.0;
             }
         }
 
-        if play.is_white {
+        if room.color.is_white() {
             y += 64.0;
-        } else {
-            y -= 64.0;
-        }
-        if play.is_white {
             x = -224.0;
         } else {
+            y -= 64.0;
             x = 224.0;
         }
     }
 
     writer.write(SyncBoard);
-
-    // Connect to client
-    commands.spawn_empty().queue(WebSocketClient::connect(
-        ClientConfig::default(),
-        format!("{WS_URL}/connect?token={}", play.token),
-    ));
 }
 
 fn despawn_board(tiles: Query<Entity, With<Pickable>>, mut commands: Commands) {
@@ -446,38 +378,6 @@ fn despawn_board(tiles: Query<Entity, With<Pickable>>, mut commands: Commands) {
 
 #[derive(Message)]
 pub struct GameEnded(pub i32);
-
-fn process_event(ev: &ChessEvent, board: &mut Board) {
-    match ev {
-        ChessEvent::Move(mv) => {
-            mv.exec(board);
-        }
-        _ => (),
-    }
-}
-
-fn process_msgs(mut session: Single<&mut Session>, mut board: ResMut<ServerBoard>) {
-    for msg in session.recv.drain(..) {
-        println!("Received {}", String::from_utf8_lossy(msg.payload.as_ref()));
-        if msg.payload.is_empty() {
-            continue;
-        }
-        let msg: ChessMessage = serde_json::from_slice(msg.payload.as_ref()).unwrap();
-        tracing::info!("Received {msg:?}");
-
-        match msg {
-            ChessMessage::Sync(events) => {
-                for ev in events.as_ref() {
-                    process_event(ev, &mut board.board);
-                }
-            }
-            ChessMessage::Event(ev) => {
-                process_event(&ev, &mut board.board);
-            }
-            ChessMessage::MoveError => panic!("something must have gone terribly wrong"),
-        }
-    }
-}
 
 fn disconnect(session: Single<Entity, With<Session>>, mut commands: Commands) {
     commands.trigger(Disconnect::new(session.entity(), "client disconnected"));
@@ -497,20 +397,13 @@ pub fn plugin(app: &mut App) {
     app.add_plugins((MeshPickingPlugin, WebSocketClientPlugin, ui::plugin))
         .add_systems(
             Update,
-            (
-                sync_ui.after(sync_board),
-                sync_board,
-                process_msgs,
-                on_make_move,
-            ),
+            (sync_ui.after(sync_board), sync_board, on_make_move),
         )
+        .add_systems(OnEnter(super::State::Game), spawn_board)
         .add_systems(OnExit(super::State::Game), (disconnect, despawn_board))
-        .insert_resource(ServerBoard {
-            board: Board::new(),
-        })
         .insert_resource(SelectedSquare(None))
         .init_resource::<ClientState>()
-        .add_observer(on_play)
+        // .add_observer(on_play)
         .add_observer(on_square_selected)
         .add_observer(on_stage_move)
         .add_observer(on_promote)

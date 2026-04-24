@@ -5,28 +5,23 @@ use std::{
 };
 
 use bevy::{
-    color::palettes::css,
-    input_focus::{
-        AcquireFocus, InputFocus,
-        tab_navigation::{TabGroup, TabIndex},
-    },
+    color::palettes::css::{self, DARK_SLATE_GRAY, GRAY},
+    ecs::system::IntoObserverSystem,
+    input_focus::{AcquireFocus, InputFocus, tab_navigation::TabIndex},
+    picking::hover::Hovered,
     prelude::*,
     ui_widgets::{Activate, Button, observe},
 };
 
 use bevy_simple_text_input::{
-    TextInput, TextInputInactive, TextInputPlugin, TextInputTextColor, TextInputValue,
+    TextInput, TextInputInactive, TextInputPlaceholder, TextInputPlugin, TextInputTextColor,
+    TextInputValue,
 };
 use chess_core::net::RoomPlayer;
 use http_for_bevy::HttpRequest;
-use net::{ReceivedRooms, ReloadRooms};
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::net::{CreateRoom, JoinRoom, PlayRoom, RoomDeleted, RoomJoined};
-
-mod net;
-
-pub use net::PlayToken;
+use crate::net::{CreateRoom, JoinRoom, Match, PlayRoom, PlayToken, RoomDeleted, RoomJoined};
 
 #[derive(EntityEvent)]
 struct FocusLost(Entity);
@@ -69,6 +64,31 @@ impl DerefMut for MyRooms {
     }
 }
 
+#[derive(Component)]
+struct EnterHint;
+
+#[derive(Component)]
+struct RoomEntry(Color);
+
+fn room_hover(
+    rooms: Query<(&Children, &Hovered, &mut BackgroundColor, &RoomEntry), Changed<Hovered>>,
+    mut vis: Query<&mut Visibility, With<EnterHint>>,
+) {
+    for mut room in rooms {
+        let mut hint = vis.get_mut(room.0.last().copied().unwrap()).unwrap();
+        *hint = if room.1.get() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        room.2.0 = if room.1.get() {
+            Color::from(DARK_SLATE_GRAY)
+        } else {
+            room.3.0
+        };
+    }
+}
+
 fn render_my_rooms(
     container: Single<Entity, With<MyRoomsList>>,
     mut commands: Commands,
@@ -89,17 +109,34 @@ fn render_my_rooms(
             ));
         } else {
             parent.with_children(|parent| {
-                for room in rooms.iter() {
+                for (i, room) in rooms.iter().enumerate() {
                     let room = room.clone();
+                    let room2 = room.clone();
+                    let color = if i % 2 == 1 {
+                        Color::srgb_u8(0x22, 0x22, 0x22)
+                    } else {
+                        Color::NONE
+                    };
                     parent
                         .spawn((
                             Node {
                                 width: percent(100),
-                                padding: UiRect::all(px(4.0)),
+                                padding: UiRect::axes(px(12.0), px(8)),
                                 align_items: AlignItems::Center,
                                 ..Default::default()
                             },
-                            BackgroundColor(Color::BLACK),
+                            BackgroundColor(color),
+                            Button,
+                            Hovered::default(),
+                            RoomEntry(color),
+                            observe(move |_: On<Activate>, mut commands: Commands| {
+                                commands.trigger(HttpRequest(PlayRoom {
+                                    room: room2.id,
+                                    is_white: room2.is_white,
+                                    token: room2.token.clone(),
+                                    code: room2.code.clone(),
+                                }));
+                            }),
                         ))
                         .with_children(|parent| {
                             parent.spawn((
@@ -107,23 +144,22 @@ fn render_my_rooms(
                                     flex_grow: 1.0,
                                     ..Default::default()
                                 },
-                                Text::new(room.name.to_string()),
+                                Text::new(format!(
+                                    "Game #{} : {}",
+                                    room.id,
+                                    room.code.as_ref().map(String::as_str).unwrap_or("public")
+                                )),
                                 TextFont {
-                                    font_size: 16.0,
+                                    font_size: 20.0,
                                     ..Default::default()
                                 },
                             ));
+
                             parent.spawn((
-                                Text::new("Play"),
-                                BackgroundColor(Color::from(css::DARK_SLATE_GRAY)),
-                                Button,
-                                observe(move |_: On<Activate>, mut commands: Commands| {
-                                    commands.trigger(HttpRequest(PlayRoom {
-                                        room: room.id,
-                                        is_white: room.is_white,
-                                        token: room.token.clone(),
-                                    }))
-                                }),
+                                Text::new("Click to enter"),
+                                TextColor(GRAY.into()),
+                                Visibility::Hidden,
+                                EnterHint,
                             ));
                         });
                 }
@@ -132,99 +168,49 @@ fn render_my_rooms(
     }
 }
 
-fn on_room_joined(
-    mut ev: ResMut<Messages<RoomJoined>>,
-    mut rooms: ResMut<MyRooms>,
-    mut commands: Commands,
-) {
-    let is_empty = ev.is_empty();
-    for ev in ev.drain() {
-        rooms.push(ev.0);
-    }
-
-    if !is_empty {
-        commands.trigger(HttpRequest(ReloadRooms));
+fn on_room_joined_update_rooms(mut ev: MessageReader<RoomJoined>, mut rooms: ResMut<MyRooms>) {
+    for ev in ev.read() {
+        rooms.push(ev.0.clone());
     }
 }
 
-#[derive(Component)]
-struct AvailableRooms;
-
-fn on_received_rooms(
-    mut ev: ResMut<Messages<ReceivedRooms>>,
-    container: Single<Entity, With<AvailableRooms>>,
-    mut commands: Commands,
-    my_rooms: Res<MyRooms>,
-) {
-    if let Some(ReceivedRooms(rooms)) = ev.drain().last() {
-        let rooms: Vec<_> = rooms
-            .into_iter()
-            .filter(|v| my_rooms.iter().all(|my| my.id != v.id))
-            .collect();
-        let mut parent = commands.get_entity(container.entity()).unwrap();
-        parent.despawn_children();
-
-        if rooms.is_empty() {
-            parent.with_child((
-                Text::new("Nothing here"),
-                TextColor::from(css::LIGHT_GRAY),
-                Node {
-                    margin: UiRect::top(px(64.0)),
-                    ..Default::default()
-                },
-            ));
-        } else {
-            parent.with_children(|parent| {
-                for room in rooms {
-                    let room_id = room.id;
-                    parent
-                        .spawn((
-                            Node {
-                                width: percent(100),
-                                padding: UiRect::all(px(4.0)),
-                                align_items: AlignItems::Center,
-                                ..Default::default()
-                            },
-                            BackgroundColor(Color::BLACK),
-                        ))
-                        .with_children(|parent| {
-                            parent.spawn((
-                                Node {
-                                    flex_grow: 1.0,
-                                    ..Default::default()
-                                },
-                                Text::new(room.name.as_ref().map_or("", String::as_str)),
-                                TextFont {
-                                    font_size: 16.0,
-                                    ..Default::default()
-                                },
-                            ));
-                            parent.spawn((
-                                Text::new("Join"),
-                                BackgroundColor(Color::from(css::DARK_SLATE_GRAY)),
-                                Button,
-                                observe(move |_: On<Activate>, mut commands: Commands| {
-                                    commands.trigger(HttpRequest(JoinRoom(room_id)));
-                                }),
-                            ));
-                        });
-                }
-            });
-        }
+fn on_room_joined_play(mut ev: MessageReader<RoomJoined>, mut out: MessageWriter<PlayToken>) {
+    if let Some(ev) = ev.read().last() {
+        out.write(PlayToken {
+            token: ev.0.token.clone(),
+            is_white: ev.0.is_white,
+            room: ev.0.id,
+            code: ev.0.code.clone(),
+        });
     }
+}
+
+fn base(width: Val) -> impl Bundle {
+    (
+        Node {
+            width,
+            border_radius: BorderRadius::all(px(24)),
+            padding: UiRect::all(px(12)),
+            ..Default::default()
+        },
+        TextFont::from_font_size(24.0),
+        // TextLayout::new_with_justify(Justify::Center),
+    )
 }
 
 fn text_input() -> impl Bundle {
     (
+        base(percent(50)),
         TextInput,
-        Node {
-            width: px(256.0),
+        TextInputInactive(true),
+        BackgroundColor(Color::srgb_u8(0x33, 0x33, 0x33)),
+        TextInputTextColor(TextColor(Color::WHITE)),
+        TabIndex(0),
+        TextInputPlaceholder {
+            value: "Enter code... (optional)".into(),
+            text_color: Some(TextColor(Color::from(GRAY))),
             ..Default::default()
         },
-        TextInputInactive(true),
-        BackgroundColor(Color::WHITE),
-        TextInputTextColor(TextColor(Color::BLACK)),
-        TabIndex(0),
         observe(
             |ev: On<AcquireFocus>, mut input: Query<&mut TextInputInactive>| {
                 input.get_mut(ev.focused_entity).unwrap().0 = false;
@@ -238,17 +224,52 @@ fn text_input() -> impl Bundle {
     )
 }
 
-fn create_button() -> impl Bundle {
+const NORMAL_COLOR: Color = Color::srgb_u8(0x33, 0x33, 0x77);
+const HOVER_COLOR: Color = Color::srgb_u8(0x55, 0x55, 0xaa);
+
+fn button<M: Send + Sync + 'static>(
+    width: Val,
+    text: &'static str,
+    activate: impl IntoObserverSystem<Activate, (), M> + Send + Sync,
+) -> impl Bundle {
     (
-        Text::new("Create"),
-        BackgroundColor(Color::from(css::DARK_SLATE_GRAY)),
+        base(width),
         Button,
+        BackgroundColor(Color::srgb_u8(0x33, 0x33, 0x77)),
+        observe(activate),
         observe(
-            |_: On<Activate>, name: Single<&TextInputValue>, mut commands: Commands| {
-                commands.trigger(HttpRequest(CreateRoom(name.0.clone())))
+            |ev: On<Pointer<Over>>, mut bg: Query<&mut BackgroundColor>| {
+                bg.get_mut(ev.entity).unwrap().0 = HOVER_COLOR;
             },
         ),
+        observe(
+            |ev: On<Pointer<Out>>, mut bg: Query<&mut BackgroundColor>| {
+                bg.get_mut(ev.entity).unwrap().0 = NORMAL_COLOR;
+            },
+        ),
+        children![(
+            Node {
+                width: percent(100),
+                ..Default::default()
+            },
+            Text::new(text),
+            TextLayout::new_with_justify(Justify::Center)
+        ),],
     )
+}
+
+fn play_action(_: On<Activate>, code: Single<&TextInputValue>, mut commands: Commands) {
+    if code.0.is_empty() {
+        tracing::info!("Matching randomly");
+        commands.trigger(HttpRequest(Match));
+    } else {
+        tracing::info!("Joining private");
+        commands.trigger(HttpRequest(JoinRoom(code.0.clone())));
+    }
+}
+
+fn create_action(_: On<Activate>, mut commands: Commands) {
+    commands.trigger(HttpRequest(CreateRoom));
 }
 
 fn spawn_ui(mut commands: Commands, mut rooms: ResMut<MyRooms>) {
@@ -256,84 +277,74 @@ fn spawn_ui(mut commands: Commands, mut rooms: ResMut<MyRooms>) {
     commands
         .spawn((
             Node {
-                display: Display::Grid,
-                grid_template_rows: vec![GridTrack::min_content()],
-                grid_template_columns: vec![GridTrack::flex(1.0), GridTrack::flex(1.0)],
                 width: percent(100),
                 height: percent(100),
-                column_gap: px(4.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
                 ..Default::default()
             },
             MainMenu,
+            BackgroundColor(Color::srgb_u8(0x33, 0x33, 0x33)),
         ))
         .with_children(|parent| {
-            // Header
-            parent
-                .spawn(Node {
-                    width: percent(100),
-                    ..Default::default()
-                })
-                .with_children(|parent| {
-                    parent.spawn((
-                        Text::new("Available Rooms"),
-                        Node {
-                            flex_grow: 1.0,
-                            ..Default::default()
-                        },
-                    ));
-                    parent.spawn((
-                        Text::new("Reload"),
-                        BackgroundColor(Color::from(css::DARK_SLATE_GRAY)),
-                        Button,
-                        observe(|_: On<Activate>, mut commands: Commands| {
-                            commands.trigger(HttpRequest(ReloadRooms))
-                        }),
-                    ));
-                });
             parent
                 .spawn((
                     Node {
-                        width: percent(100),
+                        width: percent(80),
+                        height: percent(80),
+                        border_radius: BorderRadius::all(px(50)),
+                        padding: UiRect::all(px(48)),
+                        flex_direction: FlexDirection::Column,
+                        align_items: AlignItems::Center,
+                        column_gap: px(12),
                         ..Default::default()
                     },
-                    TabGroup::default(),
+                    BackgroundColor(Color::srgb_u8(0x11, 0x11, 0x11)),
                 ))
                 .with_children(|parent| {
+                    // My games
                     parent.spawn((
-                        Text::new("My Rooms"),
                         Node {
+                            overflow: Overflow::scroll_y(),
                             flex_grow: 1.0,
+                            flex_direction: FlexDirection::Column,
+                            width: px(584),
+                            align_items: AlignItems::Center,
                             ..Default::default()
                         },
+                        MyRoomsList,
                     ));
-                    parent.spawn(text_input());
-                    parent.spawn(create_button());
+
+                    // Buttons
+                    parent
+                        .spawn(Node {
+                            width: percent(100),
+                            flex_direction: FlexDirection::Column,
+                            row_gap: px(12),
+                            align_items: AlignItems::Stretch,
+                            ..Default::default()
+                        })
+                        .with_children(|buttons| {
+                            // Play
+                            buttons
+                                .spawn(Node {
+                                    column_gap: px(8),
+                                    ..Default::default()
+                                })
+                                .with_children(|play| {
+                                    play.spawn(text_input());
+                                    play.spawn(button(percent(50), "Play", play_action));
+                                });
+
+                            // Create private
+                            buttons.spawn(button(
+                                percent(100),
+                                "Create a private room",
+                                create_action,
+                            ));
+                        });
                 });
-
-            // Main content
-            parent.spawn((
-                Node {
-                    width: percent(100.0),
-                    padding: UiRect::all(px(4.0)),
-                    align_items: AlignItems::Center,
-                    flex_direction: FlexDirection::Column,
-                    ..Default::default()
-                },
-                AvailableRooms,
-            ));
-            parent.spawn((
-                Node {
-                    width: percent(100.0),
-                    padding: UiRect::all(px(4.0)),
-                    align_items: AlignItems::Center,
-                    flex_direction: FlexDirection::Column,
-                    ..Default::default()
-                },
-                MyRoomsList,
-            ));
         });
-
-    commands.trigger(HttpRequest(ReloadRooms));
 }
 
 fn despawn_ui(menu: Single<Entity, With<MainMenu>>, mut commands: Commands) {
@@ -362,7 +373,7 @@ fn save_rooms(rooms: Res<MyRooms>) {
     }
 }
 
-fn load_rooms(mut rooms: ResMut<MyRooms>, mut commands: Commands) {
+fn load_rooms(mut rooms: ResMut<MyRooms>) {
     let path = dirs::data_dir().unwrap();
     let path = path.join(if cfg!(debug_assertions) {
         if std::env::var("TEST").is_ok() {
@@ -379,10 +390,8 @@ fn load_rooms(mut rooms: ResMut<MyRooms>, mut commands: Commands) {
     });
 
     if let Ok(file) = File::open(path.join("rooms.json")) {
-        *rooms = serde_json::from_reader(file).unwrap();
+        *rooms = serde_json::from_reader(file).unwrap_or_default();
     }
-
-    commands.trigger(HttpRequest(ReloadRooms));
 }
 
 #[derive(Event)]
@@ -403,21 +412,24 @@ fn on_room_deleted(mut ev: MessageReader<RoomDeleted>, mut commands: Commands) {
 }
 
 pub fn plugin(app: &mut App) {
-    app.add_plugins((net::plugin, TextInputPlugin))
+    app.add_plugins(TextInputPlugin)
         .add_systems(Startup, load_rooms)
         .add_systems(OnEnter(super::State::Menu), spawn_ui)
         .add_systems(OnExit(super::State::Menu), despawn_ui)
         .add_systems(
             Update,
             (
-                on_received_rooms,
-                track_focus,
-                on_room_joined,
-                render_my_rooms,
-                save_rooms,
+                (
+                    track_focus,
+                    render_my_rooms,
+                    room_hover,
+                    on_room_joined_play,
+                )
+                    .run_if(in_state(super::State::Menu)),
+                on_room_joined_update_rooms,
                 on_room_deleted,
-            )
-                .run_if(in_state(super::State::Menu)),
+                save_rooms,
+            ),
         )
         .add_observer(on_remove_room)
         .init_resource::<MyRooms>()

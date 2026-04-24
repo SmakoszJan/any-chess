@@ -7,6 +7,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub const VERSION: &str = "0.4";
+
 pub mod net;
 
 #[cfg(test)]
@@ -199,10 +201,21 @@ pub enum Kind {
     Queen,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Color {
+    #[default]
     White,
     Black,
+}
+
+impl Color {
+    /// Returns `true` if the color is [`White`].
+    ///
+    /// [`White`]: Color::White
+    #[must_use]
+    pub fn is_white(&self) -> bool {
+        matches!(self, Self::White)
+    }
 }
 
 impl Not for Color {

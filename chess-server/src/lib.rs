@@ -20,8 +20,8 @@ use axum::{
     routing::{get, post},
 };
 use chess_core::{
-    Board, Color, Move,
-    net::{ChessEvent, ChessMessage, ClientMessage, CreateRoom, Room, RoomPlayer},
+    Board, Color, Move, VERSION,
+    net::{ChessEvent, ChessMessage, ClientMessage, RoomPlayer},
 };
 use futures::lock::Mutex;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
@@ -94,27 +94,34 @@ struct AppState {
 }
 
 impl AppState {
-    async fn load(&self, room: i32) -> Result<Table, Error> {
-        struct Res {
-            payload: serde_json::Value,
+    async fn load(&self, room: i32) -> Result<Arc<Mutex<Table>>, Error> {
+        let table = self.games.lock().await.get(room);
+
+        if let Some(table) = table {
+            Ok(table)
+        } else {
+            struct Res {
+                payload: serde_json::Value,
+            }
+            let events = sqlx::query_as!(
+                Res,
+                "SELECT payload FROM event WHERE room_id=$1 ORDER BY time ASC;",
+                room
+            )
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|v| serde_json::from_value(v.payload).expect("event deserialization failed"));
+
+            let mut table = Table::new(room);
+            table.load(events);
+
+            Ok(self
+                .games
+                .lock()
+                .await
+                .maybe_insert(room, Arc::new(Mutex::new(table))))
         }
-
-        let pool = self.pool.clone();
-
-        let events = sqlx::query_as!(
-            Res,
-            "SELECT payload FROM event WHERE room_id=$1 ORDER BY time ASC;",
-            room
-        )
-        .fetch_all(&pool)
-        .await?
-        .into_iter()
-        .map(|v| serde_json::from_value(v.payload).expect("event deserialization failed"));
-
-        let mut table = Table::new();
-        table.process_all(events);
-
-        Ok(table)
     }
 }
 
@@ -133,13 +140,14 @@ pub async fn serve() -> Result<(), Error> {
     let secret: Arc<str> = Arc::from(secret);
     let secret_bytes = secret.as_bytes();
     let app = Router::new()
-        .route("/rooms", get(get_rooms).post(create_room))
-        .route("/rooms/{id}/join", post(join_room))
+        .route("/", get(async || StatusCode::OK))
+        .route("/version", get(async || Json(VERSION)))
+        .route("/rooms", post(create_room))
+        .route("/rooms/match", post(match_room))
+        .route("/rooms/{code}", post(join_room))
         .route("/rooms/{id}/play", get(play))
         .route("/connect", get(connect))
         .route("/prune", post(prune))
-        .route("/kaithhealth", get(health))
-        .route("/kaithheathcheck", get(health))
         .with_state(AppState {
             pool,
             encode_key: EncodingKey::from_secret(secret_bytes),
@@ -156,26 +164,12 @@ pub async fn serve() -> Result<(), Error> {
     Ok(())
 }
 
-async fn health() -> StatusCode {
-    StatusCode::OK
-}
-
-async fn get_rooms(State(state): State<AppState>) -> Result<Json<Vec<Room>>, Error> {
-    Ok(Json(
-        sqlx::query_as!(
-            Room,
-            "SELECT room_id AS id, name FROM room WHERE open=true;"
-        )
-        .fetch_all(&state.pool)
-        .await?,
-    ))
-}
-
 #[derive(Serialize, Deserialize)]
 struct PlayerClaims {
     room: i32,
     is_white: bool,
     exp: u64,
+    code: Option<String>,
 }
 
 #[derive(Hash)]
@@ -184,12 +178,10 @@ struct Obscured<'r> {
     secret: &'r str,
 }
 
-async fn create_room(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(room): Json<CreateRoom>,
-) -> Result<Json<RoomPlayer>, Error> {
-    let ip = client_ip::x_real_ip(&headers).ok().map(|ip| {
+const CHARSET: &[u8] = b"bcdfghjklmnpqrstvwxyz23456789";
+
+fn extract_ip(headers: &HeaderMap, state: &AppState) -> Option<i64> {
+    client_ip::x_real_ip(&headers).ok().map(|ip| {
         let data = Obscured {
             ip,
             secret: &state.secret,
@@ -197,22 +189,63 @@ async fn create_room(
         let mut s = DefaultHasher::default();
         data.hash(&mut s);
         s.finish() as i64
-    });
+    })
+}
+
+fn connection_token(room: i32, is_white: bool, state: &AppState) -> Result<String, Error> {
+    jsonwebtoken::encode(
+        &Header::default(),
+        &ConnectClaims {
+            exp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 60,
+            room,
+            is_white,
+        },
+        &state.encode_key,
+    )
+    .map_err(Error::from)
+}
+
+async fn create_room(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<RoomPlayer>, Error> {
+    let ip = extract_ip(&headers, &state);
 
     let is_white = rand::random_bool(0.5);
-    let id = sqlx::query_scalar!(
-        "INSERT INTO room (white_taken, name, open, created_by)
-            SELECT $1, $2, true, $3
-            WHERE (
-                SELECT COUNT(*) FROM room WHERE created_by=$3
-            ) < 100
-        RETURNING room_id;",
-        is_white,
-        room.0,
-        ip
-    )
-    .fetch_optional(&state.pool)
-    .await?;
+    let mut code = String::new();
+    let id = loop {
+        let chars = rand::random_iter::<u8>()
+            .take(5)
+            .map(|i| CHARSET[i as usize % CHARSET.len()] as char);
+        code.clear();
+        code.extend(chars);
+        let id = sqlx::query_scalar!(
+            "INSERT INTO room (white_taken, open, created_by, entry_code)
+                SELECT $1, true, $2, $3
+                WHERE (
+                    SELECT COUNT(*) FROM room WHERE created_by=$2
+                ) < 100
+            RETURNING room_id;",
+            is_white,
+            ip,
+            code.as_str()
+        )
+        .fetch_optional(&state.pool)
+        .await;
+
+        if id.as_ref().is_err_and(|err| {
+            err.as_database_error()
+                .is_some_and(|v| v.is_unique_violation())
+        }) {
+            continue;
+        }
+
+        break id?;
+    };
 
     let Some(id) = id else {
         return Err(Error::Rejected);
@@ -224,53 +257,132 @@ async fn create_room(
             room: id,
             is_white,
             exp: u64::MAX,
+            code: Some(code.clone()),
         },
         &state.encode_key,
     )?;
+
     Ok(Json(RoomPlayer {
         id,
         is_white,
-        name: room.0.unwrap_or_default(),
         token,
+        connection_token: connection_token(id, is_white, &state)?,
+        code: Some(code),
     }))
 }
 
 struct JoinResult {
+    room_id: i32,
     white_taken: bool,
-    name: Option<String>,
+}
+
+async fn join(
+    room: i32,
+    white_taken: bool,
+    code: Option<String>,
+    state: &AppState,
+) -> Result<Json<RoomPlayer>, Error> {
+    let token = jsonwebtoken::encode(
+        &Header::default(),
+        &PlayerClaims {
+            room,
+            is_white: !white_taken,
+            exp: u64::MAX,
+            code: code.clone(),
+        },
+        &state.encode_key,
+    )?;
+
+    // Notify the table that the game can start.
+    state
+        .load(room)
+        .await?
+        .lock()
+        .await
+        .process(ChessEvent::Start, state)
+        .await?;
+
+    Ok(Json(RoomPlayer {
+        id: room,
+        is_white: !white_taken,
+        token,
+        connection_token: connection_token(room, !white_taken, &state)?,
+        code,
+    }))
 }
 
 async fn join_room(
-    Path(room): Path<i32>,
+    Path(code): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<RoomPlayer>, Error> {
-    tracing::info!("Does this work?");
     let result = sqlx::query_as!(
         JoinResult,
-        "UPDATE room SET open=false WHERE room_id=$1 AND open=true RETURNING white_taken, name;",
-        room
+        "UPDATE room SET open=false WHERE entry_code=$1 AND open=true RETURNING room_id, white_taken;",
+        code
     )
     .fetch_optional(&state.pool)
     .await?;
 
     if let Some(result) = result {
+        join(result.room_id, result.white_taken, Some(code), &state).await
+    } else {
+        Err(Error::NotFound)
+    }
+}
+
+async fn match_room(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Json<RoomPlayer>, Error> {
+    let result = sqlx::query_as!(
+        JoinResult,
+        "UPDATE room SET open=false WHERE entry_code is NULL AND open=true RETURNING room_id, white_taken;"
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if let Some(result) = result {
+        // If exists, join
+        join(result.room_id, result.white_taken, None, &state).await
+    } else {
+        // Otherwise, create
+        let ip = extract_ip(&headers, &state);
+
+        let is_white = rand::random_bool(0.5);
+        let id = sqlx::query_scalar!(
+            "INSERT INTO room (white_taken, open, created_by)
+                SELECT $1, true, $2
+                WHERE (
+                    SELECT COUNT(*) FROM room WHERE created_by=$2
+                ) < 100
+            RETURNING room_id;",
+            is_white,
+            ip,
+        )
+        .fetch_optional(&state.pool)
+        .await?;
+
+        let Some(id) = id else {
+            return Err(Error::Rejected);
+        };
+
         let token = jsonwebtoken::encode(
             &Header::default(),
             &PlayerClaims {
-                room,
-                is_white: !result.white_taken,
+                room: id,
+                is_white,
                 exp: u64::MAX,
+                code: None,
             },
             &state.encode_key,
         )?;
         Ok(Json(RoomPlayer {
-            id: room,
-            is_white: !result.white_taken,
-            name: result.name.unwrap_or_default(),
+            id,
+            is_white,
             token,
+            connection_token: connection_token(id, is_white, &state)?,
+            code: None,
         }))
-    } else {
-        Err(Error::NotFound)
     }
 }
 
@@ -318,19 +430,7 @@ async fn play(
         return Err(Error::Gone);
     }
 
-    Ok(jsonwebtoken::encode(
-        &Header::default(),
-        &ConnectClaims {
-            exp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 60,
-            room,
-            is_white: claims.is_white,
-        },
-        &state.encode_key,
-    )?)
+    connection_token(room, claims.is_white, &state)
 }
 
 #[derive(Deserialize)]
@@ -410,7 +510,6 @@ async fn handle_msg(
     msg: Option<ClientMessage>,
     socket: &mut Connection,
     table: &Mutex<Table>,
-    room: i32,
     color: Color,
     app_state: &AppState,
 ) -> ControlFlow<()> {
@@ -430,22 +529,10 @@ async fn handle_msg(
                 return ControlFlow::Continue(());
             }
 
-            // This order is necessary for clients to properly connect (so that no move is skipped)
-            let res = sqlx::query!(
-                "INSERT INTO event (room_id, payload) VALUES ($1, $2);",
-                room,
-                serde_json::to_value(ChessEvent::Move(mv)).expect("move serialization failed")
-            )
-            .execute(&app_state.pool)
-            .await;
-
-            if let Err(err) = res {
+            if let Err(err) = table.process(ChessEvent::Move(mv), &app_state).await {
                 tracing::error!("Sqlx call failed: {err:?}, aborting");
                 return ControlFlow::Break(());
             }
-
-            // Move is ok now, we can make it
-            table.process(ChessEvent::Move(mv), true);
         }
     }
 
@@ -455,27 +542,15 @@ async fn handle_msg(
 async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_white: bool) {
     let mut socket = Connection(socket);
     let color = if is_white { Color::White } else { Color::Black };
+
     // First, load the state. We'll send it over the websocket
-    let table = app_state.games.lock().await.get(room);
-
-    let table = if let Some(table) = table {
-        table
-    } else {
-        let table = match app_state.load(room).await {
-            Ok(table) => table,
-            Err(err) => {
-                tracing::error!("room {room} failed to load: {err:?}");
-                return;
-            }
-        };
-        app_state
-            .games
-            .lock()
-            .await
-            .maybe_insert(room, Arc::new(Mutex::new(table)))
+    let table = match app_state.load(room).await {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::error!("Room {room} failed to load: {err:?}.");
+            return;
+        }
     };
-
-    tracing::debug!("room {room} loaded state");
 
     // Sync the new guy
     let mut receiver = {
@@ -508,13 +583,12 @@ async fn handle_websocket(socket: WebSocket, app_state: AppState, room: i32, is_
             }
             msg = socket.recv() => {
                 timeout.as_mut().reset(Instant::now() + Duration::from_secs(30 * 60));
-                handle_msg(msg, &mut socket, &table, room, color, &app_state).await
+                handle_msg(msg, &mut socket, &table, color, &app_state).await
             }
             ev = receiver.recv() => {
                 let Ok(()) = socket.send(&ChessMessage::Event(ev.unwrap())).await else {return;};
                 ControlFlow::Continue(())
             }
-
             _ = &mut timeout => {
                 socket.close().await.ok();
                 return;
@@ -575,36 +649,51 @@ async fn prune(headers: HeaderMap, State(state): State<AppState>) -> Result<(), 
 }
 
 pub struct Table {
+    pub id: i32,
     pub board: Board,
     pub events: Vec<ChessEvent>,
     pub sender: broadcast::Sender<ChessEvent>,
 }
 
 impl Table {
-    pub fn new() -> Self {
+    pub fn new(id: i32) -> Self {
         Self {
+            id,
             board: Board::new(),
             events: Vec::new(),
             sender: broadcast::Sender::new(64),
         }
     }
 
-    pub fn process(&mut self, ev: ChessEvent, send: bool) {
+    async fn process(&mut self, ev: ChessEvent, state: &AppState) -> Result<(), sqlx::Error> {
+        // This order is necessary for clients to properly connect (so that no move is skipped)
+        sqlx::query!(
+            "INSERT INTO event (room_id, payload) VALUES ($1, $2);",
+            self.id,
+            serde_json::to_value(ev).expect("event serialization failed")
+        )
+        .execute(&state.pool)
+        .await?;
+
+        self.process_inner(ev);
+
+        self.sender.send(ev).ok();
+
+        Ok(())
+    }
+
+    fn process_inner(&mut self, ev: ChessEvent) {
         match ev {
             ChessEvent::Move(mv) => mv.exec(&mut self.board),
-            ChessEvent::GameEnded => (),
+            ChessEvent::Start | ChessEvent::GameEnded => (),
         }
 
         self.events.push(ev);
-
-        if send {
-            self.sender.send(ev).unwrap();
-        }
     }
 
-    pub fn process_all(&mut self, ev: impl IntoIterator<Item = ChessEvent>) {
+    pub fn load(&mut self, ev: impl IntoIterator<Item = ChessEvent>) {
         for ev in ev {
-            self.process(ev, false);
+            self.process_inner(ev);
         }
     }
 }
