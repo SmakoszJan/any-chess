@@ -1,7 +1,12 @@
+use std::ops::{Deref, Index};
 use std::sync::Arc;
 
+use aeronet_io::Session;
+use aeronet_websocket::client::{ClientConfig, WebSocketClient};
 use bevy::prelude::*;
-use chess_core::net::RoomPlayer;
+use chess_core::net::{ChessEvent, ChessMessage};
+use chess_core::{Board, net::RoomPlayer};
+use chess_core::{Move, Piece};
 use http_for_bevy::{Headers, prelude::*};
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +14,11 @@ use serde::{Deserialize, Serialize};
 const HTTP_URL: &str = "http://0.0.0.0:3000";
 #[cfg(not(debug_assertions))]
 const HTTP_URL: &str = "http://164.92.131.129";
+
+#[cfg(debug_assertions)]
+const WS_URL: &str = "ws://0.0.0.0:3000";
+#[cfg(not(debug_assertions))]
+const WS_URL: &str = "ws://164.92.131.129";
 
 #[derive(Serialize)]
 pub struct CreateRoom;
@@ -171,6 +181,89 @@ fn on_errors<T: Send + Sync>(mut ev: MessageReader<http_for_bevy::Error>) {
     }
 }
 
+#[derive(Component, Clone, Copy)]
+pub struct BoardPosition {
+    pub rank: usize,
+    pub file: usize,
+}
+
+impl BoardPosition {
+    #[must_use]
+    pub fn tuple(self) -> (usize, usize) {
+        (self.rank, self.file)
+    }
+}
+
+#[derive(Resource)]
+pub struct ServerBoard {
+    board: Board,
+}
+
+impl Deref for ServerBoard {
+    type Target = Board;
+
+    fn deref(&self) -> &Self::Target {
+        &self.board
+    }
+}
+
+impl Index<BoardPosition> for ServerBoard {
+    type Output = Option<Piece>;
+
+    fn index(&self, index: BoardPosition) -> &Self::Output {
+        &self.board[(index.rank, index.file)]
+    }
+}
+
+fn process_event(ev: &ChessEvent, board: &mut Board) {
+    match ev {
+        ChessEvent::Move(mv) => {
+            mv.exec(board);
+        }
+        _ => (),
+    }
+}
+
+fn process_msgs(mut session: Single<&mut Session>, mut board: ResMut<ServerBoard>) {
+    for msg in session.recv.drain(..) {
+        println!("Received {}", String::from_utf8_lossy(msg.payload.as_ref()));
+        if msg.payload.is_empty() {
+            continue;
+        }
+        let msg: ChessMessage = serde_json::from_slice(msg.payload.as_ref()).unwrap();
+        tracing::info!("Received {msg:?}");
+
+        match msg {
+            ChessMessage::Sync(events) => {
+                for ev in events.as_ref() {
+                    process_event(ev, &mut board.board);
+                }
+            }
+            ChessMessage::Event(ev) => {
+                process_event(&ev, &mut board.board);
+            }
+            ChessMessage::MoveError => panic!("something must have gone terribly wrong"),
+        }
+    }
+}
+
+#[derive(Event)]
+pub struct Play {
+    pub token: String,
+    pub is_white: bool,
+    pub room: i32,
+}
+
+fn on_play(play: On<Play>, mut board: ResMut<ServerBoard>, mut commands: Commands) {
+    board.board = Board::new();
+
+    // Connect to client
+    commands.spawn_empty().queue(WebSocketClient::connect(
+        ClientConfig::default(),
+        format!("{WS_URL}/connect?token={}", play.token),
+    ));
+}
+
 pub fn plugin(app: &mut App) {
     app.add_plugins(HttpPlugin)
         .add_systems(
@@ -181,13 +274,18 @@ pub fn plugin(app: &mut App) {
                 on_room_joined,
                 on_room_played,
                 on_room_matched,
+                process_msgs,
             ),
         )
+        .insert_resource(ServerBoard {
+            board: Board::new(),
+        })
         .add_message::<RoomJoined>()
         .add_message::<PlayToken>()
         .add_message::<RoomDeleted>()
         .add_request_type::<CreateRoom>()
         .add_request_type::<JoinRoom>()
         .add_request_type::<PlayRoom>()
-        .add_request_type::<Match>();
+        .add_request_type::<Match>()
+        .add_observer(on_play);
 }

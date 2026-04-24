@@ -5,8 +5,8 @@ use bevy::{
 };
 
 use crate::{
-    board::{GameEnded, Play},
-    net::PlayToken,
+    board::GameEnded,
+    net::{Play, PlayToken},
     rooms::RemoveRoom,
 };
 

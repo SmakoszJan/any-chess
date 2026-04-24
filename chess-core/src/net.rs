@@ -33,6 +33,7 @@ pub enum ClientMessage {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub enum ChessEvent {
+    Start,
     Move(ChessMove),
     GameEnded,
 }
