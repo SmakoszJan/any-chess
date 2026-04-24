@@ -11,6 +11,8 @@ use crate::{
 };
 
 mod board;
+/// Initial stage of the client. Checks if it can connect to the server and if it's up to date.
+mod handshake;
 mod net;
 mod rooms;
 
@@ -41,6 +43,12 @@ fn on_game_ended(mut ev: MessageReader<GameEnded>, mut commands: Commands) {
     }
 }
 
+fn on_success(ev: MessageReader<handshake::Success>, mut next: ResMut<NextState<State>>) {
+    if !ev.is_empty() {
+        next.set(State::Menu);
+    }
+}
+
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
@@ -59,10 +67,14 @@ pub fn plugin(app: &mut App) {
         InputDispatchPlugin,
         TabNavigationPlugin,
         net::plugin,
+        handshake::plugin,
         rooms::plugin,
         board::plugin,
     ))
-    .insert_state(State::Menu)
+    .insert_state(State::Init)
     .add_systems(Startup, setup)
-    .add_systems(Update, (on_play_token, on_go_back, on_game_ended));
+    .add_systems(
+        Update,
+        (on_play_token, on_go_back, on_game_ended, on_success),
+    );
 }

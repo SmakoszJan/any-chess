@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-fn main() {
+fn main() -> AppExit {
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
@@ -17,5 +17,5 @@ fn main() {
             }),
             chess_client::plugin,
         ))
-        .run();
+        .run()
 }
