@@ -22,7 +22,7 @@ You can pay me via github sponsors or via https://buymeacoffee.com/smakosz.
 
 # Credits
 
-Chess pieces art made by Unknuffig (https://unknuffig.itch.io/).
+Chess pieces taken shamelessly from lichess.
 
 # Privacy
 
