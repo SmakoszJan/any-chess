@@ -376,8 +376,8 @@ fn on_play(
     client.connected = false;
     server.board = Board::new();
     let square = meshes.add(Rectangle::new(64.0, 64.0));
-    let white = materials.add(Color::WHITE);
-    let black = materials.add(Color::from(css::BROWN));
+    let white = materials.add(Color::srgb_u8(0xf0, 0xd9, 0xb5));
+    let black = materials.add(Color::srgb_u8(0xb5, 0x88, 0x63));
 
     let mut x = if play.is_white { -224.0 } else { 224.0 };
     let mut y = if play.is_white { -224.0 } else { 224.0 };
