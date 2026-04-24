@@ -7,6 +7,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub const VERSION: &str = "0.4";
+
 pub mod net;
 
 #[cfg(test)]
