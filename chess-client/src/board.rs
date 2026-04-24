@@ -6,10 +6,9 @@ use aeronet_websocket::client::WebSocketClientPlugin;
 use bevy::{color::palettes::css, ecs::query::QueryData, prelude::*};
 use chess_core::{Board, ChessMove, Color as ChessColor, Kind, Move, net::ClientMessage};
 
-pub use ui::GoBack;
 use ui::{HideUi, Promote, ShowUi};
 
-use crate::net::{BoardPosition, Play, ServerBoard};
+use crate::net::{BoardPosition, RoomInfo, ServerBoard};
 
 mod ui;
 
@@ -117,6 +116,9 @@ struct Square {
     t: &'static GlobalTransform,
 }
 
+const WHITE: Color = Color::srgb_u8(0xf0, 0xd9, 0xb5);
+const BLACK: Color = Color::srgb_u8(0xb5, 0x88, 0x63);
+
 fn on_square_selected(
     trigger: On<SelectSquare>,
     mut squares: Query<Square, Without<PieceMarker>>,
@@ -128,9 +130,9 @@ fn on_square_selected(
         && let Ok(mut sq) = squares.get_mut(current)
     {
         sq.color.0 = materials.add(if (sq.pos.rank + sq.pos.file) % 2 == 0 {
-            Color::from(css::BROWN)
+            BLACK
         } else {
-            Color::WHITE
+            WHITE
         });
     }
 
@@ -301,30 +303,25 @@ fn on_square_clicked(click: On<Pointer<Click>>, mut commands: Commands) {
     commands.trigger(StageMove(Some(click.entity)));
 }
 
-fn on_play(
-    play: On<Play>,
+fn spawn_board(
+    room: Res<RoomInfo>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut writer: MessageWriter<SyncBoard>,
     mut client: ResMut<ClientState>,
 ) {
-    client.color = if play.is_white {
-        ChessColor::White
-    } else {
-        ChessColor::Black
-    };
-    client.room = play.room;
+    client.color = room.color;
+    client.room = room.room;
     client.move_allowed = false;
     client.move_state = MoveState::None;
     client.board = Board::new();
-    client.connected = false;
     let square = meshes.add(Rectangle::new(64.0, 64.0));
-    let white = materials.add(Color::srgb_u8(0xf0, 0xd9, 0xb5));
-    let black = materials.add(Color::srgb_u8(0xb5, 0x88, 0x63));
+    let white = materials.add(WHITE);
+    let black = materials.add(BLACK);
 
-    let mut x = if play.is_white { -224.0 } else { 224.0 };
-    let mut y = if play.is_white { -224.0 } else { 224.0 };
+    let mut x = if room.color.is_white() { -224.0 } else { 224.0 };
+    let mut y = if room.color.is_white() { -224.0 } else { 224.0 };
     for rank in 0..8 {
         for file in 0..8 {
             commands
@@ -354,21 +351,18 @@ fn on_play(
                         Visibility::Hidden,
                     ));
                 });
-            if play.is_white {
+            if room.color.is_white() {
                 x += 64.0;
             } else {
                 x -= 64.0;
             }
         }
 
-        if play.is_white {
+        if room.color.is_white() {
             y += 64.0;
-        } else {
-            y -= 64.0;
-        }
-        if play.is_white {
             x = -224.0;
         } else {
+            y -= 64.0;
             x = 224.0;
         }
     }
@@ -405,10 +399,11 @@ pub fn plugin(app: &mut App) {
             Update,
             (sync_ui.after(sync_board), sync_board, on_make_move),
         )
+        .add_systems(OnEnter(super::State::Game), spawn_board)
         .add_systems(OnExit(super::State::Game), (disconnect, despawn_board))
         .insert_resource(SelectedSquare(None))
         .init_resource::<ClientState>()
-        .add_observer(on_play)
+        // .add_observer(on_play)
         .add_observer(on_square_selected)
         .add_observer(on_stage_move)
         .add_observer(on_promote)

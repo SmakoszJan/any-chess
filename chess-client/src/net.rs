@@ -2,13 +2,16 @@ use std::ops::{Deref, Index};
 use std::sync::Arc;
 
 use aeronet_io::Session;
+use aeronet_io::connection::Disconnect;
 use aeronet_websocket::client::{ClientConfig, WebSocketClient};
 use bevy::prelude::*;
 use chess_core::net::{ChessEvent, ChessMessage};
 use chess_core::{Board, net::RoomPlayer};
-use chess_core::{Move, Piece};
+use chess_core::{Color, Move, Piece};
 use http_for_bevy::{Headers, prelude::*};
 use serde::{Deserialize, Serialize};
+
+use crate::GoBack;
 
 #[cfg(debug_assertions)]
 const HTTP_URL: &str = "http://0.0.0.0:3000";
@@ -36,7 +39,7 @@ impl RequestType for CreateRoom {
 }
 
 #[derive(Serialize)]
-pub struct JoinRoom(pub i32);
+pub struct JoinRoom(pub String);
 
 impl RequestType for JoinRoom {
     type Extra = ();
@@ -46,7 +49,7 @@ impl RequestType for JoinRoom {
     fn extra(&self) -> Self::Extra {}
 
     fn endpoint<'r>(&'r self) -> impl ToString {
-        format!("{HTTP_URL}/rooms/{}/join", self.0)
+        format!("{HTTP_URL}/rooms/{}", self.0)
     }
 }
 
@@ -58,11 +61,13 @@ pub struct PlayRoom {
     pub room: i32,
     pub is_white: bool,
     pub token: String,
+    pub code: Option<String>,
 }
 
 pub struct PlayRoomExtra {
     pub is_white: bool,
     pub room: i32,
+    pub code: Option<String>,
 }
 
 impl RequestType for PlayRoom {
@@ -78,6 +83,7 @@ impl RequestType for PlayRoom {
         PlayRoomExtra {
             is_white: self.is_white,
             room: self.room,
+            code: self.code.clone(),
         }
     }
 
@@ -122,6 +128,7 @@ pub struct PlayToken {
     pub token: String,
     pub is_white: bool,
     pub room: i32,
+    pub code: Option<String>,
 }
 
 fn on_room_created(
@@ -144,7 +151,7 @@ fn on_room_joined(
 ) {
     for ev in ev.read() {
         if ev.status != 200 {
-            tracing::error!("HTTP error from {}: {:?}", ev.url, ev.text());
+            tracing::error!("HTTP error {} from {}: {:?}", ev.status, ev.url, ev.text());
             continue;
         }
 
@@ -165,12 +172,13 @@ fn on_room_played(
                     token: ev.text().unwrap().to_string(),
                     is_white: ev.extra().is_white,
                     room: ev.extra().room,
+                    code: ev.extra().code.clone(),
                 });
             }
             410 => {
                 deleted.write(RoomDeleted(ev.extra().room));
             }
-            _ => tracing::error!("HTTP error from {}: {:?}", ev.url, ev.text()),
+            status => tracing::error!("HTTP error {status} from {}: {:?}", ev.url, ev.text()),
         }
     }
 }
@@ -215,16 +223,26 @@ impl Index<BoardPosition> for ServerBoard {
     }
 }
 
-fn process_event(ev: &ChessEvent, board: &mut Board) {
+#[derive(Message)]
+pub struct GameStarted;
+
+fn process_event(ev: &ChessEvent, board: &mut Board, out: &mut MessageWriter<GameStarted>) {
     match ev {
         ChessEvent::Move(mv) => {
             mv.exec(board);
+        }
+        ChessEvent::Start => {
+            out.write(GameStarted);
         }
         _ => (),
     }
 }
 
-fn process_msgs(mut session: Single<&mut Session>, mut board: ResMut<ServerBoard>) {
+fn process_msgs(
+    mut session: Single<&mut Session>,
+    mut board: ResMut<ServerBoard>,
+    mut out: MessageWriter<GameStarted>,
+) {
     for msg in session.recv.drain(..) {
         println!("Received {}", String::from_utf8_lossy(msg.payload.as_ref()));
         if msg.payload.is_empty() {
@@ -236,11 +254,11 @@ fn process_msgs(mut session: Single<&mut Session>, mut board: ResMut<ServerBoard
         match msg {
             ChessMessage::Sync(events) => {
                 for ev in events.as_ref() {
-                    process_event(ev, &mut board.board);
+                    process_event(ev, &mut board.board, &mut out);
                 }
             }
             ChessMessage::Event(ev) => {
-                process_event(&ev, &mut board.board);
+                process_event(&ev, &mut board.board, &mut out);
             }
             ChessMessage::MoveError => panic!("something must have gone terribly wrong"),
         }
@@ -252,10 +270,25 @@ pub struct Play {
     pub token: String,
     pub is_white: bool,
     pub room: i32,
+    pub code: Option<String>,
 }
 
-fn on_play(play: On<Play>, mut board: ResMut<ServerBoard>, mut commands: Commands) {
+fn on_play(
+    play: On<Play>,
+    mut board: ResMut<ServerBoard>,
+    mut room: ResMut<RoomInfo>,
+    mut commands: Commands,
+) {
     board.board = Board::new();
+    *room = RoomInfo {
+        room: play.room,
+        color: if play.is_white {
+            Color::White
+        } else {
+            Color::Black
+        },
+        code: play.code.clone(),
+    };
 
     // Connect to client
     commands.spawn_empty().queue(WebSocketClient::connect(
@@ -307,6 +340,23 @@ fn on_handshake_errors(ev: MessageReader<http_for_bevy::Error>, mut out: Message
     }
 }
 
+fn disconnect_on_go_back(
+    ev: MessageReader<GoBack>,
+    session: Single<Entity, With<Session>>,
+    mut commands: Commands,
+) {
+    if !ev.is_empty() {
+        commands.trigger(Disconnect::new(session.entity(), "client disconnected"));
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct RoomInfo {
+    pub room: i32,
+    pub color: Color,
+    pub code: Option<String>,
+}
+
 pub fn plugin(app: &mut App) {
     app.add_plugins(HttpPlugin)
         .add_systems(
@@ -320,15 +370,18 @@ pub fn plugin(app: &mut App) {
                 on_room_matched,
                 on_version_returned,
                 process_msgs,
+                disconnect_on_go_back,
             ),
         )
         .insert_resource(ServerBoard {
             board: Board::new(),
         })
+        .init_resource::<RoomInfo>()
         .add_message::<RoomJoined>()
         .add_message::<PlayToken>()
         .add_message::<RoomDeleted>()
         .add_message::<Handshake>()
+        .add_message::<GameStarted>()
         .add_request_type::<CreateRoom>()
         .add_request_type::<JoinRoom>()
         .add_request_type::<PlayRoom>()
