@@ -20,7 +20,7 @@ use axum::{
     routing::{get, post},
 };
 use chess_core::{
-    Board, Color, Move,
+    Board, Color, Move, VERSION,
     net::{ChessEvent, ChessMessage, ClientMessage, RoomPlayer},
 };
 use futures::lock::Mutex;
@@ -141,6 +141,7 @@ pub async fn serve() -> Result<(), Error> {
     let secret_bytes = secret.as_bytes();
     let app = Router::new()
         .route("/", get(async || StatusCode::OK))
+        .route("/version", get(async || VERSION))
         .route("/rooms", post(create_room))
         .route("/rooms/match", post(match_room))
         .route("/rooms/{code}", post(join_room))
