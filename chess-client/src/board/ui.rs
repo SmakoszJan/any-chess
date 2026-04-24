@@ -6,7 +6,7 @@ use bevy::{
 };
 use chess_core::Kind;
 
-use crate::board::ClientState;
+use crate::{GoBack, board::ClientState};
 
 #[derive(Component)]
 struct PromotionUi;
@@ -100,9 +100,6 @@ pub struct YourColor;
 #[derive(Component)]
 pub struct DisconnectedStatus;
 
-#[derive(Message)]
-pub struct GoBack;
-
 fn spawn_info(mut commands: Commands) {
     commands
         .spawn((
@@ -187,6 +184,5 @@ pub fn plugin(app: &mut App) {
         .add_systems(OnEnter(crate::State::Game), spawn_info)
         .add_systems(OnExit(crate::State::Game), despawn_info)
         .add_observer(on_show_ui)
-        .add_observer(on_hide_ui)
-        .add_message::<GoBack>();
+        .add_observer(on_hide_ui);
 }

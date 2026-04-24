@@ -21,9 +21,7 @@ use chess_core::net::RoomPlayer;
 use http_for_bevy::HttpRequest;
 use serde::{Deserialize, Serialize};
 
-use crate::net::{CreateRoom, Match, PlayRoom, RoomDeleted, RoomJoined};
-
-mod net;
+use crate::net::{CreateRoom, JoinRoom, Match, PlayRoom, PlayToken, RoomDeleted, RoomJoined};
 
 #[derive(EntityEvent)]
 struct FocusLost(Entity);
@@ -136,6 +134,7 @@ fn render_my_rooms(
                                     room: room2.id,
                                     is_white: room2.is_white,
                                     token: room2.token.clone(),
+                                    code: room2.code.clone(),
                                 }));
                             }),
                         ))
@@ -169,9 +168,20 @@ fn render_my_rooms(
     }
 }
 
-fn on_room_joined(mut ev: ResMut<Messages<RoomJoined>>, mut rooms: ResMut<MyRooms>) {
-    for ev in ev.drain() {
-        rooms.push(ev.0);
+fn on_room_joined_update_rooms(mut ev: MessageReader<RoomJoined>, mut rooms: ResMut<MyRooms>) {
+    for ev in ev.read() {
+        rooms.push(ev.0.clone());
+    }
+}
+
+fn on_room_joined_play(mut ev: MessageReader<RoomJoined>, mut out: MessageWriter<PlayToken>) {
+    if let Some(ev) = ev.read().last() {
+        out.write(PlayToken {
+            token: ev.0.token.clone(),
+            is_white: ev.0.is_white,
+            room: ev.0.id,
+            code: ev.0.code.clone(),
+        });
     }
 }
 
@@ -252,6 +262,9 @@ fn play_action(_: On<Activate>, code: Single<&TextInputValue>, mut commands: Com
     if code.0.is_empty() {
         tracing::info!("Matching randomly");
         commands.trigger(HttpRequest(Match));
+    } else {
+        tracing::info!("Joining private");
+        commands.trigger(HttpRequest(JoinRoom(code.0.clone())));
     }
 }
 
@@ -377,7 +390,7 @@ fn load_rooms(mut rooms: ResMut<MyRooms>) {
     });
 
     if let Ok(file) = File::open(path.join("rooms.json")) {
-        *rooms = serde_json::from_reader(file).unwrap();
+        *rooms = serde_json::from_reader(file).unwrap_or_default();
     }
 }
 
@@ -406,8 +419,14 @@ pub fn plugin(app: &mut App) {
         .add_systems(
             Update,
             (
-                (track_focus, render_my_rooms, room_hover).run_if(in_state(super::State::Menu)),
-                on_room_joined,
+                (
+                    track_focus,
+                    render_my_rooms,
+                    room_hover,
+                    on_room_joined_play,
+                )
+                    .run_if(in_state(super::State::Menu)),
+                on_room_joined_update_rooms,
                 on_room_deleted,
                 save_rooms,
             ),
