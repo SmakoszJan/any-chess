@@ -175,7 +175,7 @@ fn on_room_played(
     }
 }
 
-fn on_errors<T: Send + Sync>(mut ev: MessageReader<http_for_bevy::Error>) {
+fn on_errors(mut ev: MessageReader<http_for_bevy::Error>) {
     for err in ev.read() {
         tracing::error!("{:?}", err);
     }
@@ -264,16 +264,61 @@ fn on_play(play: On<Play>, mut board: ResMut<ServerBoard>, mut commands: Command
     ));
 }
 
+#[derive(Serialize)]
+pub struct GetVersion;
+
+#[derive(Message, Deserialize)]
+pub enum Handshake {
+    Version(String),
+    CantConnect,
+}
+
+impl RequestType for GetVersion {
+    type Extra = ();
+    type Response = String;
+    const METHOD: Method = Method::GET;
+
+    fn extra(&self) -> Self::Extra {
+        ()
+    }
+
+    fn endpoint<'r>(&'r self) -> impl ToString {
+        format!("{HTTP_URL}/version")
+    }
+}
+
+fn on_version_returned(
+    mut ev: MessageReader<HttpResponse<GetVersion>>,
+    mut out: MessageWriter<Handshake>,
+) {
+    for ev in ev.read() {
+        if ev.status != 200 {
+            tracing::error!("HTTP error from {}: {:?}", ev.url, ev.text());
+            continue;
+        }
+
+        out.write(Handshake::Version(ev.json().unwrap()));
+    }
+}
+
+fn on_handshake_errors(ev: MessageReader<http_for_bevy::Error>, mut out: MessageWriter<Handshake>) {
+    if !ev.is_empty() {
+        out.write(Handshake::CantConnect);
+    }
+}
+
 pub fn plugin(app: &mut App) {
     app.add_plugins(HttpPlugin)
         .add_systems(
             Update,
             (
-                on_errors::<Arc<RoomPlayer>>,
+                on_errors,
+                on_handshake_errors,
                 on_room_created,
                 on_room_joined,
                 on_room_played,
                 on_room_matched,
+                on_version_returned,
                 process_msgs,
             ),
         )
@@ -283,9 +328,11 @@ pub fn plugin(app: &mut App) {
         .add_message::<RoomJoined>()
         .add_message::<PlayToken>()
         .add_message::<RoomDeleted>()
+        .add_message::<Handshake>()
         .add_request_type::<CreateRoom>()
         .add_request_type::<JoinRoom>()
         .add_request_type::<PlayRoom>()
         .add_request_type::<Match>()
+        .add_request_type::<GetVersion>()
         .add_observer(on_play);
 }
