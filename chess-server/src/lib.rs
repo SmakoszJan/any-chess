@@ -172,11 +172,8 @@ struct Obscured<'r> {
 
 const CHARSET: &[u8] = b"bcdfghjklmnpqrstvwxyz23456789";
 
-async fn create_room(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<Json<RoomPlayer>, Error> {
-    let ip = client_ip::x_real_ip(&headers).ok().map(|ip| {
+fn extract_ip(headers: &HeaderMap, state: &AppState) -> Option<i64> {
+    client_ip::x_real_ip(&headers).ok().map(|ip| {
         let data = Obscured {
             ip,
             secret: &state.secret,
@@ -184,7 +181,31 @@ async fn create_room(
         let mut s = DefaultHasher::default();
         data.hash(&mut s);
         s.finish() as i64
-    });
+    })
+}
+
+fn connection_token(room: i32, is_white: bool, state: &AppState) -> Result<String, Error> {
+    jsonwebtoken::encode(
+        &Header::default(),
+        &ConnectClaims {
+            exp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 60,
+            room,
+            is_white,
+        },
+        &state.encode_key,
+    )
+    .map_err(Error::from)
+}
+
+async fn create_room(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<RoomPlayer>, Error> {
+    let ip = extract_ip(&headers, &state);
 
     let is_white = rand::random_bool(0.5);
     let mut code = String::new();
@@ -208,7 +229,7 @@ async fn create_room(
         .fetch_optional(&state.pool)
         .await;
 
-        if !id.as_ref().is_err_and(|err| {
+        if id.as_ref().is_err_and(|err| {
             err.as_database_error()
                 .is_some_and(|v| v.is_unique_violation())
         }) {
@@ -228,20 +249,48 @@ async fn create_room(
             room: id,
             is_white,
             exp: u64::MAX,
-            code: Some(code),
+            code: Some(code.clone()),
         },
         &state.encode_key,
     )?;
+
     Ok(Json(RoomPlayer {
         id,
         is_white,
         token,
+        connection_token: connection_token(id, is_white, &state)?,
+        code: Some(code),
     }))
 }
 
 struct JoinResult {
     room_id: i32,
     white_taken: bool,
+}
+
+fn join(
+    room: i32,
+    white_taken: bool,
+    code: Option<String>,
+    state: &AppState,
+) -> Result<Json<RoomPlayer>, Error> {
+    let token = jsonwebtoken::encode(
+        &Header::default(),
+        &PlayerClaims {
+            room,
+            is_white: !white_taken,
+            exp: u64::MAX,
+            code: code.clone(),
+        },
+        &state.encode_key,
+    )?;
+    Ok(Json(RoomPlayer {
+        id: room,
+        is_white: !white_taken,
+        token,
+        connection_token: connection_token(room, !white_taken, &state)?,
+        code,
+    }))
 }
 
 async fn join_room(
@@ -257,21 +306,7 @@ async fn join_room(
     .await?;
 
     if let Some(result) = result {
-        let token = jsonwebtoken::encode(
-            &Header::default(),
-            &PlayerClaims {
-                room: result.room_id,
-                is_white: !result.white_taken,
-                exp: u64::MAX,
-                code: Some(code),
-            },
-            &state.encode_key,
-        )?;
-        Ok(Json(RoomPlayer {
-            id: result.room_id,
-            is_white: !result.white_taken,
-            token,
-        }))
+        join(result.room_id, result.white_taken, Some(code), &state)
     } else {
         Err(Error::NotFound)
     }
@@ -290,21 +325,7 @@ async fn match_room(
 
     if let Some(result) = result {
         // If exists, join
-        let token = jsonwebtoken::encode(
-            &Header::default(),
-            &PlayerClaims {
-                room: result.room_id,
-                is_white: !result.white_taken,
-                exp: u64::MAX,
-                code: None,
-            },
-            &state.encode_key,
-        )?;
-        Ok(Json(RoomPlayer {
-            id: result.room_id,
-            is_white: !result.white_taken,
-            token,
-        }))
+        join(result.room_id, result.white_taken, None, &state)
     } else {
         // Otherwise, create
         let ip = client_ip::x_real_ip(&headers).ok().map(|ip| {
@@ -349,6 +370,8 @@ async fn match_room(
             id,
             is_white,
             token,
+            connection_token: connection_token(id, is_white, &state)?,
+            code: None,
         }))
     }
 }
@@ -397,19 +420,7 @@ async fn play(
         return Err(Error::Gone);
     }
 
-    Ok(jsonwebtoken::encode(
-        &Header::default(),
-        &ConnectClaims {
-            exp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 60,
-            room,
-            is_white: claims.is_white,
-        },
-        &state.encode_key,
-    )?)
+    connection_token(room, claims.is_white, &state)
 }
 
 #[derive(Deserialize)]

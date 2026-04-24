@@ -15,6 +15,8 @@ pub struct RoomPlayer {
     pub id: i32,
     pub is_white: bool,
     pub token: String,
+    pub connection_token: String,
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

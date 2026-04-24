@@ -6,10 +6,12 @@ use bevy::{
 
 use crate::{
     board::{GameEnded, Play},
-    rooms::{PlayToken, RemoveRoom},
+    net::PlayToken,
+    rooms::RemoveRoom,
 };
 
 mod board;
+mod net;
 mod rooms;
 
 fn on_play_token(
@@ -45,7 +47,9 @@ fn setup(mut commands: Commands) {
 
 #[derive(Debug, Clone, Copy, States, PartialEq, Eq, Hash)]
 pub enum State {
+    Init,
     Menu,
+    Waiting,
     Game,
 }
 
@@ -54,6 +58,7 @@ pub fn plugin(app: &mut App) {
         UiWidgetsPlugins,
         InputDispatchPlugin,
         TabNavigationPlugin,
+        net::plugin,
         rooms::plugin,
         board::plugin,
     ))
