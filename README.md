@@ -5,7 +5,9 @@ I will accept content contributions.
 
 # Features
 
-Just chess. Except no castling because that's boring. Game ends when king dies, rather than with checkmate. No drawing rules.
+1. Just chess. Except no castling because that's boring. Game ends when king dies, rather than with checkmate. No drawing rules.
+2. En passant is forced
+3. Offering en passant is forced
 
 # If you want to help and have time to spare
 

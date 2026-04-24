@@ -64,7 +64,7 @@ fn sync_ui(
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 enum MoveState {
     #[default]
     None,
@@ -149,7 +149,7 @@ fn on_square_selected(
     }
 }
 
-#[derive(Event)]
+#[derive(Event, Debug)]
 struct StageMove(Option<Entity>);
 
 fn on_stage_move(
@@ -310,12 +310,14 @@ fn spawn_board(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut writer: MessageWriter<SyncBoard>,
     mut client: ResMut<ClientState>,
+    server: Res<ServerBoard>,
 ) {
     client.color = room.color;
     client.room = room.room;
     client.move_allowed = false;
     client.move_state = MoveState::None;
-    client.board = Board::new();
+    client.board = server.clone();
+    client.move_allowed = server.turn == room.color;
     let square = meshes.add(Rectangle::new(64.0, 64.0));
     let white = materials.add(WHITE);
     let black = materials.add(BLACK);

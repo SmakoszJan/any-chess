@@ -157,8 +157,12 @@ pub mod tests {
 
     #[test]
     fn en_passant() {
-        let mut board = Board::from_str("////p//1P").unwrap();
+        let mut board = Board::from_str("R////p//1P").unwrap();
 
+        assert_eq!(
+            ChessMove::new((7, 0), (7, 2)).check(&board),
+            Err(ChessError::EnPassant)
+        );
         ChessMove::new((1, 1), (3, 1)).exec(&mut board);
         assert_eq!(
             ChessMove::new((3, 0), (2, 0)).check(&board),
@@ -199,6 +203,16 @@ pub enum Kind {
     Bishop,
     King,
     Queen,
+}
+
+impl Kind {
+    /// Returns `true` if the kind is [`Pawn`].
+    ///
+    /// [`Pawn`]: Kind::Pawn
+    #[must_use]
+    pub fn is_pawn(&self) -> bool {
+        matches!(self, Self::Pawn)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -371,7 +385,7 @@ impl FromStr for Board {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ChessMove {
     pub from: (usize, usize),
@@ -433,19 +447,9 @@ pub enum ChessError {
     EnPassant,
 }
 
-impl Move for ChessMove {
-    type State = Board;
-    type Err = ChessError;
-
-    fn request(_state: &Self::State) -> impl Serialize {
-        ""
-    }
-
-    fn check(&self, state: &Self::State) -> Result<(), ChessError> {
-        if state.victory.is_some() {
-            return Err(ChessError::AlreadyWon);
-        }
-
+impl ChessMove {
+    // Checks move pattern and obstruction
+    fn check_physically_possible(&self, state: &Board) -> Result<(), ChessError> {
         if self.from.0 > 7 || self.from.1 > 7 || self.to.0 > 7 || self.to.1 > 7 {
             return Err(ChessError::OutOfBounds);
         }
@@ -454,60 +458,10 @@ impl Move for ChessMove {
             return Err(ChessError::Empty);
         };
 
-        // can only move your
-        if state.ordered && piece.color != state.turn {
-            return Err(ChessError::OnlyMoveYourColor);
-        }
-
-        // cant take own
         if let Some(target) = state[self.to]
             && target.color == piece.color
         {
             return Err(ChessError::TakeOwn);
-        }
-
-        // Forced en passant
-        if let Some(en_passant) = state.en_passant {
-            // Verify that en passant can be performed.
-            let rank = (en_passant.0 as i32
-                + match state.turn {
-                    Color::White => -1,
-                    Color::Black => 1,
-                }) as usize;
-
-            let left = (en_passant.1 != 0).then_some((rank, en_passant.1 - 1));
-            let right = (en_passant.1 != 7).then_some((rank, en_passant.1 + 1));
-
-            // If at any of the candidates there is a current-colored pawn, en passant is possible.
-            let possible = if let Some(left) = left
-                && let Some(piece) = state[left]
-                && piece.color == state.turn
-                && piece.kind == Kind::Pawn
-            {
-                true
-            } else if let Some(right) = right
-                && let Some(piece) = state[right]
-                && piece.color == state.turn
-                && piece.kind == Kind::Pawn
-            {
-                true
-            } else {
-                false
-            };
-
-            if possible {
-                // We can now check if the move is en passant
-                let err = Err(ChessError::EnPassant);
-                if self.to != en_passant {
-                    return err;
-                }
-
-                if let Some(piece) = state[self.from]
-                    && piece.kind != Kind::Pawn
-                {
-                    return err;
-                }
-            }
         }
 
         // Verify pattern
@@ -640,6 +594,117 @@ impl Move for ChessMove {
             return Err(ChessError::MovePattern);
         }
 
+        // Verify trace
+        if trace.into_iter().any(|v| state[v].is_some()) {
+            return Err(ChessError::Collision);
+        }
+
+        Ok(())
+    }
+}
+
+impl Move for ChessMove {
+    type State = Board;
+    type Err = ChessError;
+
+    fn request(_state: &Self::State) -> impl Serialize {
+        ""
+    }
+
+    fn check(&self, state: &Self::State) -> Result<(), ChessError> {
+        if state.victory.is_some() {
+            return Err(ChessError::AlreadyWon);
+        }
+
+        let Some(piece) = state[self.from] else {
+            return Err(ChessError::Empty);
+        };
+
+        // can only move your
+        if state.ordered && piece.color != state.turn {
+            return Err(ChessError::OnlyMoveYourColor);
+        }
+
+        self.check_physically_possible(state)?;
+
+        // Generate forced moves
+        let mut forced = Vec::new();
+
+        // En passant is forced
+        if let Some(en_passant) = state.en_passant {
+            // Verify that en passant can be performed.
+            let rank = (en_passant.0 as i32
+                + match state.turn {
+                    Color::White => -1,
+                    Color::Black => 1,
+                }) as usize;
+
+            let left = (en_passant.1 != 0).then_some((rank, en_passant.1 - 1));
+            let right = (en_passant.1 != 7).then_some((rank, en_passant.1 + 1));
+
+            // If at any of the candidates there is a current-colored pawn, en passant is possible.
+            if let Some(left) = left
+                && let Some(piece) = state[left]
+                && piece.color == state.turn
+                && piece.kind == Kind::Pawn
+            {
+                forced.push(ChessMove::new(left, en_passant));
+            }
+
+            if let Some(right) = right
+                && let Some(piece) = state[right]
+                && piece.color == state.turn
+                && piece.kind == Kind::Pawn
+            {
+                forced.push(ChessMove::new(right, en_passant));
+            }
+        }
+
+        // Offering en passant is also forced
+        let (base_rank, center_rank) = match state.turn {
+            Color::White => (1, 3),
+            Color::Black => (6, 4),
+        };
+
+        for file in 0..7 {
+            let Some(piece) = state[(center_rank, file)] else {
+                continue;
+            };
+            if !piece.kind.is_pawn() || piece.color == state.turn {
+                continue;
+            }
+
+            // There is an opposing pawn on the friendly center line.
+            if file != 0 {
+                let from = (base_rank, file - 1);
+                let mv = ChessMove::new(from, (center_rank, file - 1));
+                if let Some(piece) = state[from]
+                    && piece.kind.is_pawn()
+                    && piece.color == state.turn
+                    && mv.check_physically_possible(state).is_ok()
+                {
+                    forced.push(mv);
+                }
+            }
+
+            if file != 7 {
+                let from = (base_rank, file + 1);
+                let mv = ChessMove::new(from, (center_rank, file + 1));
+                if let Some(piece) = state[from]
+                    && piece.kind.is_pawn()
+                    && piece.color == state.turn
+                    && mv.check_physically_possible(state).is_ok()
+                {
+                    forced.push(mv);
+                }
+            }
+        }
+
+        // Verify that the move is a forced one
+        if !(forced.is_empty() || forced.contains(self)) {
+            return Err(ChessError::EnPassant);
+        }
+
         // Verify promotion
         if piece.kind == Kind::Pawn && (self.to.0 == 0 || self.to.0 == 7) {
             let Some(promotion) = self.promotion else {
@@ -651,11 +716,6 @@ impl Move for ChessMove {
             }
         } else if self.promotion.is_some() {
             return Err(ChessError::Promotion);
-        }
-
-        // Verify trace
-        if trace.into_iter().any(|v| state[v].is_some()) {
-            return Err(ChessError::Collision);
         }
 
         Ok(())
