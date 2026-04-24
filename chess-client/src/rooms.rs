@@ -5,7 +5,8 @@ use std::{
 };
 
 use bevy::{
-    color::palettes::css::{self, GRAY},
+    color::palettes::css::{self, DARK_SLATE_GRAY, GRAY},
+    ecs::system::IntoObserverSystem,
     input_focus::{AcquireFocus, InputFocus, tab_navigation::TabIndex},
     picking::hover::Hovered,
     prelude::*,
@@ -20,11 +21,9 @@ use chess_core::net::RoomPlayer;
 use http_for_bevy::HttpRequest;
 use serde::{Deserialize, Serialize};
 
-use crate::rooms::net::{CreateRoom, RoomDeleted, RoomJoined};
+use crate::net::{CreateRoom, Match, PlayRoom, RoomDeleted, RoomJoined};
 
 mod net;
-
-pub use net::PlayToken;
 
 #[derive(EntityEvent)]
 struct FocusLost(Entity);
@@ -71,18 +70,23 @@ impl DerefMut for MyRooms {
 struct EnterHint;
 
 #[derive(Component)]
-struct RoomEntry;
+struct RoomEntry(Color);
 
 fn room_hover(
-    rooms: Query<(&Children, &Hovered), (With<RoomEntry>, Changed<Hovered>)>,
+    rooms: Query<(&Children, &Hovered, &mut BackgroundColor, &RoomEntry), Changed<Hovered>>,
     mut vis: Query<&mut Visibility, With<EnterHint>>,
 ) {
-    for room in rooms {
+    for mut room in rooms {
         let mut hint = vis.get_mut(room.0.last().copied().unwrap()).unwrap();
         *hint = if room.1.get() {
             Visibility::Inherited
         } else {
             Visibility::Hidden
+        };
+        room.2.0 = if room.1.get() {
+            Color::from(DARK_SLATE_GRAY)
+        } else {
+            room.3.0
         };
     }
 }
@@ -109,6 +113,12 @@ fn render_my_rooms(
             parent.with_children(|parent| {
                 for (i, room) in rooms.iter().enumerate() {
                     let room = room.clone();
+                    let room2 = room.clone();
+                    let color = if i % 2 == 1 {
+                        Color::srgb_u8(0x22, 0x22, 0x22)
+                    } else {
+                        Color::NONE
+                    };
                     parent
                         .spawn((
                             Node {
@@ -117,20 +127,17 @@ fn render_my_rooms(
                                 align_items: AlignItems::Center,
                                 ..Default::default()
                             },
-                            BackgroundColor(if i % 2 == 1 {
-                                Color::srgb_u8(0x22, 0x22, 0x22)
-                            } else {
-                                Color::NONE
-                            }),
+                            BackgroundColor(color),
                             Button,
                             Hovered::default(),
-                            RoomEntry,
-                            // observe(|ev: on<pointer<over>>, kids: query<&children>, mut hint: query<&mut visibility, with<enterhint>>| {
-                            //     *hint.get_mut(*kids.get(ev.entity).unwrap().last().unwrap()).unwrap() = visibility::inherited;
-                            // }),
-                            // observe(|ev: on<pointer<out>>, kids: query<&children>, mut hint: query<&mut visibility, with<enterhint>>| {
-                            //     *hint.get_mut(*kids.get(ev.entity).unwrap().last().unwrap()).unwrap() = visibility::hidden;
-                            // }),
+                            RoomEntry(color),
+                            observe(move |_: On<Activate>, mut commands: Commands| {
+                                commands.trigger(HttpRequest(PlayRoom {
+                                    room: room2.id,
+                                    is_white: room2.is_white,
+                                    token: room2.token.clone(),
+                                }));
+                            }),
                         ))
                         .with_children(|parent| {
                             parent.spawn((
@@ -138,7 +145,11 @@ fn render_my_rooms(
                                     flex_grow: 1.0,
                                     ..Default::default()
                                 },
-                                Text::new(format!("Game #{}", room.id)),
+                                Text::new(format!(
+                                    "Game #{} : {}",
+                                    room.id,
+                                    room.code.as_ref().map(String::as_str).unwrap_or("public")
+                                )),
                                 TextFont {
                                     font_size: 20.0,
                                     ..Default::default()
@@ -186,7 +197,7 @@ fn text_input() -> impl Bundle {
         TextInputTextColor(TextColor(Color::WHITE)),
         TabIndex(0),
         TextInputPlaceholder {
-            value: "Enter code...".into(),
+            value: "Enter code... (optional)".into(),
             text_color: Some(TextColor(Color::from(GRAY))),
             ..Default::default()
         },
@@ -206,16 +217,16 @@ fn text_input() -> impl Bundle {
 const NORMAL_COLOR: Color = Color::srgb_u8(0x33, 0x33, 0x77);
 const HOVER_COLOR: Color = Color::srgb_u8(0x55, 0x55, 0xaa);
 
-fn button(width: Val, text: &'static str) -> impl Bundle {
+fn button<M: Send + Sync + 'static>(
+    width: Val,
+    text: &'static str,
+    activate: impl IntoObserverSystem<Activate, (), M> + Send + Sync,
+) -> impl Bundle {
     (
         base(width),
         Button,
         BackgroundColor(Color::srgb_u8(0x33, 0x33, 0x77)),
-        observe(
-            |_: On<Activate>, name: Single<&TextInputValue>, mut commands: Commands| {
-                commands.trigger(HttpRequest(CreateRoom(name.0.clone())))
-            },
-        ),
+        observe(activate),
         observe(
             |ev: On<Pointer<Over>>, mut bg: Query<&mut BackgroundColor>| {
                 bg.get_mut(ev.entity).unwrap().0 = HOVER_COLOR;
@@ -235,6 +246,17 @@ fn button(width: Val, text: &'static str) -> impl Bundle {
             TextLayout::new_with_justify(Justify::Center)
         ),],
     )
+}
+
+fn play_action(_: On<Activate>, code: Single<&TextInputValue>, mut commands: Commands) {
+    if code.0.is_empty() {
+        tracing::info!("Matching randomly");
+        commands.trigger(HttpRequest(Match));
+    }
+}
+
+fn create_action(_: On<Activate>, mut commands: Commands) {
+    commands.trigger(HttpRequest(CreateRoom));
 }
 
 fn spawn_ui(mut commands: Commands, mut rooms: ResMut<MyRooms>) {
@@ -298,11 +320,15 @@ fn spawn_ui(mut commands: Commands, mut rooms: ResMut<MyRooms>) {
                                 })
                                 .with_children(|play| {
                                     play.spawn(text_input());
-                                    play.spawn(button(percent(50), "Play"));
+                                    play.spawn(button(percent(50), "Play", play_action));
                                 });
 
                             // Create private
-                            buttons.spawn(button(percent(100), "Create a private room"));
+                            buttons.spawn(button(
+                                percent(100),
+                                "Create a private room",
+                                create_action,
+                            ));
                         });
                 });
         });
@@ -373,21 +399,18 @@ fn on_room_deleted(mut ev: MessageReader<RoomDeleted>, mut commands: Commands) {
 }
 
 pub fn plugin(app: &mut App) {
-    app.add_plugins((net::plugin, TextInputPlugin))
+    app.add_plugins(TextInputPlugin)
         .add_systems(Startup, load_rooms)
         .add_systems(OnEnter(super::State::Menu), spawn_ui)
         .add_systems(OnExit(super::State::Menu), despawn_ui)
         .add_systems(
             Update,
             (
-                track_focus,
+                (track_focus, render_my_rooms, room_hover).run_if(in_state(super::State::Menu)),
                 on_room_joined,
-                render_my_rooms,
-                room_hover,
-                save_rooms,
                 on_room_deleted,
-            )
-                .run_if(in_state(super::State::Menu)),
+                save_rooms,
+            ),
         )
         .add_observer(on_remove_room)
         .init_resource::<MyRooms>()
