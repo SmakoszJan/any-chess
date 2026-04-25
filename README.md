@@ -8,6 +8,7 @@ I will accept content contributions.
 1. Just chess. Except no castling because that's boring. Game ends when king dies, rather than with checkmate. No drawing rules.
 2. En passant is forced
 3. Offering en passant is forced
+4. Pawns can promote to kings. Kill all to win
 
 # If you want to help and have time to spare
 
