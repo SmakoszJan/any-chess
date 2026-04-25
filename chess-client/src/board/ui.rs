@@ -12,7 +12,13 @@ use crate::{GoBack, board::ClientState};
 struct PromotionUi;
 
 fn setup(assets: Res<AssetServer>, mut commands: Commands) {
-    let pieces = [Kind::Queen, Kind::Rook, Kind::Knight, Kind::Bishop];
+    let pieces = [
+        Kind::Queen,
+        Kind::Rook,
+        Kind::Knight,
+        Kind::Bishop,
+        Kind::King,
+    ];
 
     commands
         .spawn((

@@ -158,6 +158,7 @@ pub mod tests {
     #[test]
     fn en_passant() {
         let mut board = Board::from_str("R////p//1P").unwrap();
+        board.rules.move_after_win = true;
 
         assert_eq!(
             ChessMove::new((7, 0), (7, 2)).check(&board),
@@ -269,7 +270,21 @@ impl Display for Piece {
 }
 
 #[derive(Clone)]
+struct Rules {
+    move_after_win: bool,
+}
+
+impl Default for Rules {
+    fn default() -> Self {
+        Self {
+            move_after_win: false,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Board {
+    rules: Rules,
     state: [Option<Piece>; 64],
     pub turn: Color,
     ordered: bool,
@@ -286,6 +301,7 @@ impl Board {
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            rules: Rules::default(),
             state: [None; 64],
             turn: Color::White,
             ordered: true,
@@ -377,6 +393,7 @@ impl FromStr for Board {
 
         Ok(Board {
             state,
+            rules: Rules::default(),
             turn: Color::White,
             ordered: true,
             victory: None,
@@ -612,7 +629,7 @@ impl Move for ChessMove {
     }
 
     fn check(&self, state: &Self::State) -> Result<(), ChessError> {
-        if state.victory.is_some() {
+        if state.victory.is_some() && !state.rules.move_after_win {
             return Err(ChessError::AlreadyWon);
         }
 
@@ -711,7 +728,7 @@ impl Move for ChessMove {
                 return Err(ChessError::Promotion);
             };
 
-            if matches!(promotion, Kind::Pawn | Kind::King) {
+            if promotion == Kind::Pawn {
                 return Err(ChessError::Promotion);
             }
         } else if self.promotion.is_some() {
@@ -722,16 +739,9 @@ impl Move for ChessMove {
     }
 
     fn exec(self, state: &mut Self::State) {
-        let target = state[self.to];
         assert!(state[self.from].is_some());
         state[self.to] = state[self.from].take();
         state.turn = !state.turn;
-
-        if let Some(target) = target
-            && target.kind == Kind::King
-        {
-            state.victory = Some(!target.color);
-        }
 
         if let Some(promotion) = self.promotion {
             state[self.to].as_mut().unwrap().kind = promotion;
@@ -750,6 +760,26 @@ impl Move for ChessMove {
         state.en_passant = None;
         if piece.kind == Kind::Pawn && self.to.0.abs_diff(self.from.0) == 2 {
             state.en_passant = Some(((self.to.0 + self.from.0) / 2, self.to.1));
+        }
+
+        if state.victory.is_none() {
+            // Check king count
+            let mut white_count = 0;
+            let mut black_count = 0;
+            for piece in state.state.iter().copied().flatten() {
+                if piece.kind == Kind::King {
+                    match piece.color {
+                        Color::White => white_count += 1,
+                        Color::Black => black_count += 1,
+                    }
+                }
+            }
+
+            if white_count == 0 {
+                state.victory = Some(Color::Black);
+            } else if black_count == 0 {
+                state.victory = Some(Color::White);
+            }
         }
     }
 }
