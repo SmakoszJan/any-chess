@@ -210,6 +210,28 @@ pub enum Direction {
     Down,
 }
 
+impl Direction {
+    #[must_use]
+    fn left(self) -> Direction {
+        match self {
+            Self::Up => Self::Left,
+            Self::Left => Self::Down,
+            Self::Right => Self::Up,
+            Self::Down => Self::Right,
+        }
+    }
+
+    #[must_use]
+    fn right(self) -> Direction {
+        match self {
+            Self::Up => Self::Right,
+            Self::Left => Self::Up,
+            Self::Right => Self::Down,
+            Self::Down => Self::Left,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Piece {
     pub kind: Kind,
@@ -606,6 +628,20 @@ impl Board {
                         if self.get(target).is_pawn_takeable(piece.color) {
                             add(target);
                         }
+
+                        // We can also just rotate
+                        moves.insert(ChessMove {
+                            from: pos,
+                            to: pos,
+                            direction: Some(piece.direction.left()),
+                            promotion: None,
+                        });
+                        moves.insert(ChessMove {
+                            from: pos,
+                            to: pos,
+                            direction: Some(piece.direction.right()),
+                            promotion: None,
+                        });
                     }
                 }
             }
