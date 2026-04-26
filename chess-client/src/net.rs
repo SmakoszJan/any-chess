@@ -7,7 +7,7 @@ use aeronet_websocket::client::{ClientConfig, WebSocketClient};
 use bevy::prelude::*;
 use chess_core::net::{ChessEvent, ChessMessage};
 use chess_core::{Board, net::RoomPlayer};
-use chess_core::{Color, Move, Piece};
+use chess_core::{Color, Move, Piece, Pos};
 use http_for_bevy::{Headers, prelude::*};
 use serde::{Deserialize, Serialize};
 
@@ -190,15 +190,13 @@ fn on_errors(mut ev: MessageReader<http_for_bevy::Error>) {
 }
 
 #[derive(Component, Clone, Copy)]
-pub struct BoardPosition {
-    pub rank: usize,
-    pub file: usize,
-}
+pub struct BoardPosition(pub Pos);
 
-impl BoardPosition {
-    #[must_use]
-    pub fn tuple(self) -> (usize, usize) {
-        (self.rank, self.file)
+impl Deref for BoardPosition {
+    type Target = Pos;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -219,7 +217,7 @@ impl Index<BoardPosition> for ServerBoard {
     type Output = Option<Piece>;
 
     fn index(&self, index: BoardPosition) -> &Self::Output {
-        &self.board[(index.rank, index.file)]
+        &self.board[index.0]
     }
 }
 
