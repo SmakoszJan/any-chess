@@ -4,7 +4,7 @@ use aeronet_io::{
 };
 use aeronet_websocket::client::WebSocketClientPlugin;
 use bevy::{color::palettes::css, ecs::query::QueryData, prelude::*};
-use chess_core::{Board, ChessMove, Color as ChessColor, Kind, Move, net::ClientMessage};
+use chess_core::{Board, ChessMove, Color as ChessColor, Kind, Move, Pos, net::ClientMessage};
 
 use ui::{HideUi, Promote, ShowUi};
 
@@ -48,7 +48,7 @@ fn sync_ui(
         pieces
             .par_iter_mut()
             .for_each(|(&sq, mut sprite, mut vis)| {
-                if let Some(piece) = state.board[sq.tuple()] {
+                if let Some(piece) = state.board[sq.0] {
                     *vis = Visibility::Inherited;
                     let color_letter = match piece.color {
                         chess_core::Color::White => 'w',
@@ -183,12 +183,12 @@ fn on_stage_move(
         && let Ok(to) = squares.get(picked)
     {
         let mut m = ChessMove {
-            from: (from.1.rank, from.1.file),
-            to: (to.1.rank, to.1.file),
+            from: **from.1,
+            to: **to.1,
             promotion: None,
         };
 
-        if let Some(piece) = state.board[from.1.tuple()]
+        if let Some(piece) = state.board[from.1.0]
             && piece.kind == Kind::Pawn
             && (to.1.rank == 0 || to.1.rank == 7)
         {
@@ -229,11 +229,11 @@ fn on_stage_move(
 
         for (mut sprite, mut vis, pos) in markers {
             let mut m = ChessMove {
-                from: (current.rank, current.file),
-                to: (pos.rank, pos.file),
+                from: current.0,
+                to: pos.0,
                 promotion: None,
             };
-            if let Some(piece) = state.board[current.tuple()]
+            if let Some(piece) = state.board[current.0]
                 && piece.kind == Kind::Pawn
                 && (pos.rank == 0 || pos.rank == 7)
             {
@@ -242,7 +242,7 @@ fn on_stage_move(
 
             if m.check(&state.board).is_ok() {
                 *vis = Visibility::Inherited;
-                if state.board[pos.tuple()].is_some() {
+                if state.board[pos.0].is_some() {
                     sprite.image = assets.load("take.png");
                 } else {
                     sprite.image = assets.load("move.png");
@@ -267,8 +267,8 @@ fn on_promote(
 
     make_move.write(MakeMove(
         ChessMove {
-            from: (from.rank, from.file),
-            to: (to.rank, to.file),
+            from: from.0,
+            to: to.0,
             promotion: Some(ev.0),
         },
         true,
@@ -336,19 +336,19 @@ fn spawn_board(
                     }),
                     Transform::from_xyz(x, y, 0.0),
                     Pickable::default(),
-                    BoardPosition { rank, file },
+                    BoardPosition(Pos { rank, file }),
                 ))
                 .observe(on_square_clicked)
                 .with_children(|children| {
                     children.spawn((
                         Sprite::default(),
                         Transform::from_scale(Vec3::splat(0.5)),
-                        BoardPosition { rank, file },
+                        BoardPosition(Pos { rank, file }),
                         PieceMarker,
                     ));
                     children.spawn((
                         Sprite::default(),
-                        BoardPosition { rank, file },
+                        BoardPosition(Pos { rank, file }),
                         MoveMarker,
                         Visibility::Hidden,
                     ));

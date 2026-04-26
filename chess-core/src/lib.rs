@@ -1,8 +1,9 @@
 use std::{
-    cmp::Ordering,
+    collections::HashSet,
     fmt::Display,
-    ops::{Index, IndexMut, Not},
+    ops::{Add, Index, IndexMut, Mul, Not},
     str::FromStr,
+    sync::OnceLock,
 };
 
 use serde::{Deserialize, Serialize};
@@ -15,83 +16,57 @@ pub mod net;
 pub mod tests {
     use std::str::FromStr;
 
-    use crate::{Board, ChessError, ChessMove, Color, Kind, Move};
+    use crate::{Board, ChessMove, Color, Kind, Move};
 
     #[test]
     fn empty_squares_do_not_move() {
         let board = Board::empty();
 
-        assert_eq!(
-            ChessMove::new((0, 0), (0, 0)).check(&board),
-            Err(ChessError::Empty)
-        );
+        assert!(ChessMove::new((0, 0), (0, 0)).check(&board).is_err());
     }
 
     #[test]
     fn pieces_cant_move_out_of_bounds() {
         let board = Board::from_str("P").unwrap();
 
-        assert_eq!(
-            ChessMove::new((7, 0), (8, 0)).check(&board),
-            Err(ChessError::OutOfBounds)
-        );
+        assert!(ChessMove::new((7, 0), (8, 0)).check(&board).is_err());
     }
 
     #[test]
     fn cant_take_your_color() {
         let mut board = Board::from_str("pP/pP").unwrap();
-        board.set_ordered(false);
+        board.rules.move_order = false;
 
-        assert_eq!(
-            ChessMove::new((7, 0), (6, 0)).check(&board),
-            Err(ChessError::TakeOwn)
-        );
-        assert_eq!(
-            ChessMove::new((6, 1), (7, 1)).check(&board),
-            Err(ChessError::TakeOwn)
-        );
+        assert!(ChessMove::new((7, 0), (6, 0)).check(&board).is_err());
+        assert!(ChessMove::new((6, 1), (7, 1)).check(&board).is_err());
     }
 
     #[test]
     fn move_order() {
         let mut board = Board::new();
 
-        assert_eq!(
-            ChessMove::new((6, 0), (5, 0)).check(&board),
-            Err(ChessError::OnlyMoveYourColor)
-        );
+        assert!(ChessMove::new((6, 0), (5, 0)).check(&board).is_err());
         ChessMove::new((1, 0), (2, 0)).exec(&mut board);
-        assert_eq!(
-            ChessMove::new((1, 1), (2, 1)).check(&board),
-            Err(ChessError::OnlyMoveYourColor)
-        );
+        assert!(ChessMove::new((1, 1), (2, 1)).check(&board).is_err());
     }
 
     #[test]
     fn pawn_moves_only_up() {
-        let mut board = Board::from_str("//Pp").unwrap();
-        board.set_ordered(false);
+        let mut board = Board::from_str("///Pp").unwrap();
+        board.rules.move_order = false;
 
-        ChessMove::new((5, 0), (6, 0)).check(&board).unwrap();
-        ChessMove::new((5, 1), (4, 1)).check(&board).unwrap();
-        assert_eq!(
-            ChessMove::new((5, 0), (7, 0)).check(&board),
-            Err(ChessError::MovePattern)
-        );
-        assert_eq!(
-            ChessMove::new((5, 0), (6, 1)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        ChessMove::new((4, 0), (5, 0)).check(&board).unwrap();
+        ChessMove::new((4, 1), (3, 1)).check(&board).unwrap();
+        ChessMove::new((4, 0), (5, 0)).exec(&mut board);
+        assert!(ChessMove::new((5, 0), (7, 0)).check(&board).is_err());
+        assert!(ChessMove::new((5, 0), (6, 1)).check(&board).is_err());
     }
 
     #[test]
     fn pawn_takes_only_diagonally() {
         let board = Board::from_str("pp/P").unwrap();
 
-        assert_eq!(
-            ChessMove::new((6, 0), (7, 0)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        assert!(ChessMove::new((6, 0), (7, 0)).check(&board).is_err());
         ChessMove::new((6, 0), (7, 1))
             .promote(Kind::Queen)
             .check(&board)
@@ -102,10 +77,7 @@ pub mod tests {
     fn knight_makes_an_l() {
         let board = Board::from_str("//4N").unwrap();
 
-        assert_eq!(
-            ChessMove::new((5, 4), (7, 4)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        assert!(ChessMove::new((5, 4), (7, 4)).check(&board).is_err());
         ChessMove::new((5, 4), (7, 3)).check(&board).unwrap();
     }
 
@@ -113,10 +85,7 @@ pub mod tests {
     fn bishop_moves_in_a_cross() {
         let board = Board::from_str("//4B").unwrap();
 
-        assert_eq!(
-            ChessMove::new((5, 4), (7, 4)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        assert!(ChessMove::new((5, 4), (7, 4)).check(&board).is_err());
         ChessMove::new((5, 4), (7, 2)).check(&board).unwrap();
     }
 
@@ -124,10 +93,7 @@ pub mod tests {
     fn rook_moves_in_a_plus() {
         let board = Board::from_str("//4R").unwrap();
 
-        assert_eq!(
-            ChessMove::new((5, 4), (7, 2)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        assert!(ChessMove::new((5, 4), (7, 2)).check(&board).is_err());
         ChessMove::new((5, 4), (7, 4)).check(&board).unwrap();
     }
 
@@ -135,10 +101,7 @@ pub mod tests {
     fn queen_moves_anywhere() {
         let board = Board::from_str("//4Q").unwrap();
 
-        assert_eq!(
-            ChessMove::new((5, 4), (7, 3)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        assert!(ChessMove::new((5, 4), (7, 3)).check(&board).is_err());
         ChessMove::new((5, 4), (7, 4)).check(&board).unwrap();
         ChessMove::new((5, 4), (7, 2)).check(&board).unwrap();
     }
@@ -147,12 +110,19 @@ pub mod tests {
     fn king_moves_anywhere_close() {
         let board = Board::from_str("//4K").unwrap();
 
-        assert_eq!(
-            ChessMove::new((5, 4), (7, 2)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        assert!(ChessMove::new((5, 4), (7, 2)).check(&board).is_err());
         ChessMove::new((5, 4), (6, 4)).check(&board).unwrap();
         ChessMove::new((5, 4), (6, 3)).check(&board).unwrap();
+    }
+
+    #[test]
+    fn en_passant_forced() {
+        let mut board = Board::from_str("R////p//1P").unwrap();
+        board.rules.move_after_win = true;
+
+        assert!(ChessMove::new((7, 0), (7, 2)).check(&board).is_err());
+        ChessMove::new((1, 1), (3, 1)).exec(&mut board);
+        assert!(ChessMove::new((3, 0), (2, 0)).check(&board).is_err());
     }
 
     #[test]
@@ -160,26 +130,15 @@ pub mod tests {
         let mut board = Board::from_str("R////p//1P").unwrap();
         board.rules.move_after_win = true;
 
-        assert_eq!(
-            ChessMove::new((7, 0), (7, 2)).check(&board),
-            Err(ChessError::EnPassant)
-        );
         ChessMove::new((1, 1), (3, 1)).exec(&mut board);
-        assert_eq!(
-            ChessMove::new((3, 0), (2, 0)).check(&board),
-            Err(ChessError::EnPassant)
-        );
         let m = ChessMove::new((3, 0), (2, 1));
         m.check(&board).unwrap();
         m.exec(&mut board);
-        assert!(board[(3, 1)].is_none());
+        assert!(board[(3, 1).into()].is_none());
 
         let mut board = Board::from_str("////pP").unwrap();
         board.turn = Color::Black;
-        assert_eq!(
-            ChessMove::new((3, 0), (2, 1)).check(&board),
-            Err(ChessError::MovePattern)
-        );
+        assert!(ChessMove::new((3, 0), (2, 1)).check(&board).is_err());
     }
 
     #[test]
@@ -189,14 +148,11 @@ pub mod tests {
         let m = ChessMove::new((7, 1), (7, 0));
         m.exec(&mut board);
 
-        assert_eq!(
-            ChessMove::new((7, 2), (6, 2)).check(&board),
-            Err(ChessError::AlreadyWon)
-        );
+        assert!(ChessMove::new((7, 2), (6, 2)).check(&board).is_err());
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum Kind {
     Pawn,
     Rook,
@@ -245,9 +201,19 @@ impl Not for Color {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Up,
+    Left,
+    Right,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Piece {
     pub kind: Kind,
     pub color: Color,
+    pub direction: Direction,
+    pub moved: bool,
 }
 
 impl Display for Piece {
@@ -272,14 +238,106 @@ impl Display for Piece {
 #[derive(Clone)]
 struct Rules {
     move_after_win: bool,
+    move_order: bool,
 }
 
 impl Default for Rules {
     fn default() -> Self {
         Self {
             move_after_win: false,
+            move_order: true,
         }
     }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct Pos {
+    pub rank: i32,
+    pub file: i32,
+}
+
+impl From<(i32, i32)> for Pos {
+    fn from(value: (i32, i32)) -> Self {
+        Self {
+            rank: value.0,
+            file: value.1,
+        }
+    }
+}
+
+impl Add<Pos> for Pos {
+    type Output = Pos;
+
+    fn add(self, rhs: Pos) -> Self::Output {
+        Pos {
+            rank: self.rank + rhs.rank,
+            file: self.file + rhs.file,
+        }
+    }
+}
+
+impl Mul<Direction> for Pos {
+    type Output = Pos;
+
+    fn mul(self, rhs: Direction) -> Self::Output {
+        match rhs {
+            Direction::Up => self,
+            Direction::Left => Pos {
+                rank: self.file,
+                file: -self.rank,
+            },
+            Direction::Down => Pos {
+                rank: -self.rank,
+                file: -self.file,
+            },
+            Direction::Right => Pos {
+                rank: -self.file,
+                file: self.rank,
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum Tile {
+    Some(Piece),
+    EnPassant,
+    Empty,
+    Void,
+}
+
+impl Tile {
+    #[must_use]
+    fn is_empty_or(self, f: impl FnOnce(Piece) -> bool) -> bool {
+        match self {
+            Self::Some(v) => f(v),
+            Self::Empty => true,
+            Self::Void => false,
+            Self::EnPassant => true,
+        }
+    }
+
+    #[must_use]
+    fn is_empty(self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    #[must_use]
+    fn is_pawn_takeable(self, color: Color) -> bool {
+        match self {
+            Self::Some(v) => v.color != color,
+            Self::EnPassant => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct MoveSet {
+    moves: HashSet<ChessMove>,
+    forced: HashSet<ChessMove>,
+    /// Is it possible?
+    en_passant: bool,
 }
 
 #[derive(Clone)]
@@ -287,9 +345,9 @@ pub struct Board {
     rules: Rules,
     state: [Option<Piece>; 64],
     pub turn: Color,
-    ordered: bool,
     pub victory: Option<Color>,
-    en_passant: Option<(usize, usize)>,
+    en_passant: Option<Pos>,
+    moves: OnceLock<MoveSet>,
 }
 
 impl Board {
@@ -304,14 +362,254 @@ impl Board {
             rules: Rules::default(),
             state: [None; 64],
             turn: Color::White,
-            ordered: true,
             victory: None,
             en_passant: None,
+            moves: OnceLock::new(),
         }
     }
 
-    pub fn set_ordered(&mut self, v: bool) {
-        self.ordered = v;
+    fn get(&self, pos: Pos) -> Tile {
+        if Some(pos) == self.en_passant {
+            Tile::EnPassant
+        } else if 0 <= pos.rank && pos.rank < 8 && 0 <= pos.file && pos.file < 8 {
+            self.state[(pos.rank * 8 + pos.file) as usize].map_or(Tile::Empty, Tile::Some)
+        } else {
+            Tile::Void
+        }
+    }
+
+    fn gen_patterns(
+        &self,
+        piece: Piece,
+        pos: Pos,
+        patterns: impl IntoIterator<Item = (i32, i32)>,
+        moves: &mut HashSet<ChessMove>,
+    ) {
+        for (dx, dy) in patterns {
+            let target = Pos {
+                rank: pos.rank + dy,
+                file: pos.file + dx,
+            };
+
+            if self.get(target).is_empty_or(|v| v.color != piece.color) {
+                moves.insert(ChessMove {
+                    from: pos,
+                    to: target,
+                    promotion: None,
+                });
+            }
+        }
+    }
+
+    fn gen_directions(
+        &self,
+        piece: Piece,
+        pos: Pos,
+        dirs: impl IntoIterator<Item = (i32, i32)>,
+        moves: &mut HashSet<ChessMove>,
+    ) {
+        for (dx, dy) in dirs {
+            let mut target = Pos {
+                rank: pos.rank + dy,
+                file: pos.file + dx,
+            };
+
+            loop {
+                if self.get(target).is_empty_or(|v| v.color != piece.color) {
+                    moves.insert(ChessMove {
+                        from: pos,
+                        to: target,
+                        promotion: None,
+                    });
+                } else {
+                    break;
+                }
+
+                target.rank += dy;
+                target.file += dx;
+            }
+        }
+    }
+
+    fn get_moves(&self, deep: bool) -> &MoveSet {
+        self.moves.get_or_init(|| {
+            if !self.rules.move_after_win && self.victory.is_some() {
+                return MoveSet::default();
+            }
+
+            let mut moves = HashSet::new();
+            let mut forced = HashSet::new();
+            let mut en_passant = false;
+
+            for (i, piece) in self
+                .state
+                .iter()
+                .copied()
+                .enumerate()
+                .flat_map(|v| Some((v.0, v.1?)))
+            {
+                let pos = Pos {
+                    rank: (i / 8) as i32,
+                    file: (i % 8) as i32,
+                };
+
+                if self.rules.move_order && piece.color != self.turn {
+                    continue;
+                }
+
+                match piece.kind {
+                    Kind::King => {
+                        self.gen_patterns(
+                            piece,
+                            pos,
+                            [
+                                (-1, -1),
+                                (-1, 0),
+                                (-1, 1),
+                                (0, -1),
+                                (0, 1),
+                                (1, -1),
+                                (1, 0),
+                                (1, 1),
+                            ],
+                            &mut moves,
+                        );
+                    }
+                    Kind::Bishop => {
+                        self.gen_directions(
+                            piece,
+                            pos,
+                            [(1, 1), (1, -1), (-1, -1), (-1, 1)],
+                            &mut moves,
+                        );
+                    }
+                    Kind::Rook => {
+                        self.gen_directions(
+                            piece,
+                            pos,
+                            [(1, 0), (1, 0), (0, -1), (0, 1)],
+                            &mut moves,
+                        );
+                    }
+                    Kind::Queen => {
+                        self.gen_directions(
+                            piece,
+                            pos,
+                            [
+                                (-1, -1),
+                                (-1, 0),
+                                (-1, 1),
+                                (0, -1),
+                                (0, 1),
+                                (1, -1),
+                                (1, 0),
+                                (1, 1),
+                            ],
+                            &mut moves,
+                        );
+                    }
+                    Kind::Knight => {
+                        self.gen_patterns(
+                            piece,
+                            pos,
+                            [
+                                (-1, -2),
+                                (-1, 2),
+                                (1, -2),
+                                (1, 2),
+                                (2, -1),
+                                (2, 1),
+                                (-2, -1),
+                                (-2, 1),
+                            ],
+                            &mut moves,
+                        );
+                    }
+                    Kind::Pawn => {
+                        let mut add = |target: Pos| {
+                            let last = match piece.color {
+                                Color::White => 7,
+                                Color::Black => 0,
+                            };
+
+                            let mut candidates = HashSet::new();
+
+                            if target.rank == last {
+                                for kind in [
+                                    Kind::Rook,
+                                    Kind::Knight,
+                                    Kind::Bishop,
+                                    Kind::Queen,
+                                    Kind::King,
+                                ] {
+                                    candidates.insert(ChessMove {
+                                        from: pos,
+                                        to: target,
+                                        promotion: Some(kind),
+                                    });
+                                }
+                            } else {
+                                candidates.insert(ChessMove {
+                                    from: pos,
+                                    to: target,
+                                    promotion: None,
+                                });
+                            }
+
+                            for mv in candidates {
+                                moves.insert(mv);
+
+                                // En passant is forced
+                                if self.get(mv.to) == Tile::EnPassant {
+                                    forced.insert(mv);
+                                    en_passant = true;
+                                }
+
+                                // Offerring en passant is forced
+                                let mut b2 = self.clone();
+                                mv.exec(&mut b2);
+                                if deep && b2.get_moves(false).en_passant {
+                                    forced.insert(mv);
+                                }
+                            }
+                        };
+
+                        // Forward 1
+                        let target = pos + Pos { rank: 1, file: 0 } * piece.direction;
+                        let can1 = if self.get(target).is_empty() {
+                            add(target);
+                            true
+                        } else {
+                            false
+                        };
+
+                        // Forward 2
+                        if can1 && !piece.moved {
+                            let target = pos + Pos { rank: 2, file: 0 } * piece.direction;
+                            add(target);
+                        }
+
+                        // Capture left
+                        let target = pos + Pos { rank: 1, file: -1 } * piece.direction;
+                        if self.get(target).is_pawn_takeable(piece.color) {
+                            add(target);
+                        }
+
+                        // Capture right
+                        let target = pos + Pos { rank: 1, file: 1 } * piece.direction;
+                        if self.get(target).is_pawn_takeable(piece.color) {
+                            add(target);
+                        }
+                    }
+                }
+            }
+
+            MoveSet {
+                moves,
+                forced,
+                en_passant,
+            }
+        })
     }
 }
 
@@ -319,7 +617,7 @@ impl Display for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for rank in 0..8 {
             for file in 0..8 {
-                match self[(7 - rank, file)] {
+                match self[(7 - rank, file).into()] {
                     Some(p) => write!(f, "{p}"),
                     None => write!(f, "."),
                 }?;
@@ -332,17 +630,17 @@ impl Display for Board {
     }
 }
 
-impl Index<(usize, usize)> for Board {
+impl Index<Pos> for Board {
     type Output = Option<Piece>;
 
-    fn index(&self, index: (usize, usize)) -> &Self::Output {
-        &self.state[index.0 * 8 + index.1]
+    fn index(&self, index: Pos) -> &Self::Output {
+        &self.state[(index.rank * 8 + index.file) as usize]
     }
 }
 
-impl IndexMut<(usize, usize)> for Board {
-    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
-        &mut self.state[index.0 * 8 + index.1]
+impl IndexMut<Pos> for Board {
+    fn index_mut(&mut self, index: Pos) -> &mut Self::Output {
+        &mut self.state[(index.rank * 8 + index.file) as usize]
     }
 }
 
@@ -387,7 +685,15 @@ impl FromStr for Board {
                 Color::Black
             };
 
-            state[rank * 8 + file] = Some(Piece { kind: piece, color });
+            state[rank * 8 + file] = Some(Piece {
+                kind: piece,
+                color,
+                direction: match color {
+                    Color::White => Direction::Up,
+                    Color::Black => Direction::Down,
+                },
+                moved: false,
+            });
             file += 1;
         }
 
@@ -395,26 +701,26 @@ impl FromStr for Board {
             state,
             rules: Rules::default(),
             turn: Color::White,
-            ordered: true,
             victory: None,
             en_passant: None,
+            moves: OnceLock::default(),
         })
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[must_use]
 pub struct ChessMove {
-    pub from: (usize, usize),
-    pub to: (usize, usize),
+    pub from: Pos,
+    pub to: Pos,
     pub promotion: Option<Kind>,
 }
 
 impl ChessMove {
-    pub const fn new(from: (usize, usize), to: (usize, usize)) -> Self {
+    pub fn new(from: impl Into<Pos>, to: impl Into<Pos>) -> Self {
         Self {
-            from,
-            to,
+            from: from.into(),
+            to: to.into(),
             promotion: None,
         }
     }
@@ -452,172 +758,7 @@ pub trait Table {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChessError {
-    Empty,
-    MovePattern,
-    OutOfBounds,
-    TakeOwn,
-    Collision,
-    OnlyMoveYourColor,
-    Promotion,
-    AlreadyWon,
-    // En passant is forced
-    EnPassant,
-}
-
-impl ChessMove {
-    // Checks move pattern and obstruction
-    fn check_physically_possible(&self, state: &Board) -> Result<(), ChessError> {
-        if self.from.0 > 7 || self.from.1 > 7 || self.to.0 > 7 || self.to.1 > 7 {
-            return Err(ChessError::OutOfBounds);
-        }
-
-        let Some(piece) = state[self.from] else {
-            return Err(ChessError::Empty);
-        };
-
-        if let Some(target) = state[self.to]
-            && target.color == piece.color
-        {
-            return Err(ChessError::TakeOwn);
-        }
-
-        // Verify pattern
-        // TODO: Make it `SmallVec`
-        let mut trace = Vec::new();
-        let pattern = match piece.kind {
-            Kind::Pawn => {
-                let is_attacking = state[self.to].is_some() || state.en_passant == Some(self.to);
-                (match piece.color {
-                    Color::White => {
-                        let ret = self.to.0 == self.from.0 + 1;
-
-                        if !ret && self.from.0 == 1 && self.to.0 == 3 {
-                            trace.push((2, self.from.1));
-                            true
-                        } else {
-                            ret
-                        }
-                    }
-                    Color::Black => {
-                        let ret = self.to.0 == self.from.0 - 1;
-
-                        if !ret && self.from.0 == 6 && self.to.0 == 4 {
-                            trace.push((5, self.from.1));
-                            true
-                        } else {
-                            ret
-                        }
-                    }
-                }) && self.from.1.abs_diff(self.to.1) == if is_attacking { 1 } else { 0 }
-                    && !(self.from.1.abs_diff(self.to.1) == 1
-                        && self.from.0.abs_diff(self.to.0) == 2)
-            }
-            Kind::Knight => {
-                let y = self.from.0.abs_diff(self.to.0);
-                let x = self.from.1.abs_diff(self.to.1);
-
-                x == 1 && y == 2 || x == 2 && y == 1
-            }
-            Kind::Bishop => {
-                let y = self.from.0.abs_diff(self.to.0);
-                let x = self.from.1.abs_diff(self.to.1);
-
-                let mut pos = self.from;
-
-                loop {
-                    // step
-                    match pos.0.cmp(&self.to.0) {
-                        Ordering::Less => pos.0 += 1,
-                        Ordering::Equal => (),
-                        Ordering::Greater => pos.0 -= 1,
-                    }
-                    match pos.1.cmp(&self.to.1) {
-                        Ordering::Less => pos.1 += 1,
-                        Ordering::Equal => (),
-                        Ordering::Greater => pos.1 -= 1,
-                    }
-
-                    if pos == self.to {
-                        break;
-                    } else {
-                        trace.push(pos);
-                    }
-                }
-
-                x == y && x != 0
-            }
-            Kind::Rook => {
-                let y = self.from.0.abs_diff(self.to.0);
-                let x = self.from.1.abs_diff(self.to.1);
-
-                let mut pos = self.from;
-
-                loop {
-                    // step
-                    match pos.0.cmp(&self.to.0) {
-                        Ordering::Less => pos.0 += 1,
-                        Ordering::Equal => (),
-                        Ordering::Greater => pos.0 -= 1,
-                    }
-                    match pos.1.cmp(&self.to.1) {
-                        Ordering::Less => pos.1 += 1,
-                        Ordering::Equal => (),
-                        Ordering::Greater => pos.1 -= 1,
-                    }
-
-                    if pos == self.to {
-                        break;
-                    } else {
-                        trace.push(pos);
-                    }
-                }
-
-                x == 0 && y != 0 || y == 0 && x != 0
-            }
-            Kind::Queen => {
-                let y = self.from.0.abs_diff(self.to.0);
-                let x = self.from.1.abs_diff(self.to.1);
-
-                let mut pos = self.from;
-
-                loop {
-                    // step
-                    match pos.0.cmp(&self.to.0) {
-                        Ordering::Less => pos.0 += 1,
-                        Ordering::Equal => (),
-                        Ordering::Greater => pos.0 -= 1,
-                    }
-                    match pos.1.cmp(&self.to.1) {
-                        Ordering::Less => pos.1 += 1,
-                        Ordering::Equal => (),
-                        Ordering::Greater => pos.1 -= 1,
-                    }
-
-                    if pos == self.to {
-                        break;
-                    } else {
-                        trace.push(pos);
-                    }
-                }
-
-                x == 0 && y != 0 || y == 0 && x != 0 || (x == y && x != 0)
-            }
-            Kind::King => {
-                self.from.0.abs_diff(self.to.0) <= 1 && self.from.1.abs_diff(self.to.1) <= 1
-            }
-        };
-
-        if !pattern {
-            return Err(ChessError::MovePattern);
-        }
-
-        // Verify trace
-        if trace.into_iter().any(|v| state[v].is_some()) {
-            return Err(ChessError::Collision);
-        }
-
-        Ok(())
-    }
+    Invalid,
 }
 
 impl Move for ChessMove {
@@ -629,119 +770,20 @@ impl Move for ChessMove {
     }
 
     fn check(&self, state: &Self::State) -> Result<(), ChessError> {
-        if state.victory.is_some() && !state.rules.move_after_win {
-            return Err(ChessError::AlreadyWon);
+        let moves = state.get_moves(true);
+        println!("{:?}", moves.forced);
+        if moves.moves.contains(self) && (moves.forced.is_empty() || moves.forced.contains(self)) {
+            Ok(())
+        } else {
+            Err(ChessError::Invalid)
         }
-
-        let Some(piece) = state[self.from] else {
-            return Err(ChessError::Empty);
-        };
-
-        // can only move your
-        if state.ordered && piece.color != state.turn {
-            return Err(ChessError::OnlyMoveYourColor);
-        }
-
-        self.check_physically_possible(state)?;
-
-        // Generate forced moves
-        let mut forced = Vec::new();
-
-        // En passant is forced
-        if let Some(en_passant) = state.en_passant {
-            // Verify that en passant can be performed.
-            let rank = (en_passant.0 as i32
-                + match state.turn {
-                    Color::White => -1,
-                    Color::Black => 1,
-                }) as usize;
-
-            let left = (en_passant.1 != 0).then_some((rank, en_passant.1 - 1));
-            let right = (en_passant.1 != 7).then_some((rank, en_passant.1 + 1));
-
-            // If at any of the candidates there is a current-colored pawn, en passant is possible.
-            if let Some(left) = left
-                && let Some(piece) = state[left]
-                && piece.color == state.turn
-                && piece.kind == Kind::Pawn
-            {
-                forced.push(ChessMove::new(left, en_passant));
-            }
-
-            if let Some(right) = right
-                && let Some(piece) = state[right]
-                && piece.color == state.turn
-                && piece.kind == Kind::Pawn
-            {
-                forced.push(ChessMove::new(right, en_passant));
-            }
-        }
-
-        // Offering en passant is also forced
-        let (base_rank, center_rank) = match state.turn {
-            Color::White => (1, 3),
-            Color::Black => (6, 4),
-        };
-
-        for file in 0..7 {
-            let Some(piece) = state[(center_rank, file)] else {
-                continue;
-            };
-            if !piece.kind.is_pawn() || piece.color == state.turn {
-                continue;
-            }
-
-            // There is an opposing pawn on the friendly center line.
-            if file != 0 {
-                let from = (base_rank, file - 1);
-                let mv = ChessMove::new(from, (center_rank, file - 1));
-                if let Some(piece) = state[from]
-                    && piece.kind.is_pawn()
-                    && piece.color == state.turn
-                    && mv.check_physically_possible(state).is_ok()
-                {
-                    forced.push(mv);
-                }
-            }
-
-            if file != 7 {
-                let from = (base_rank, file + 1);
-                let mv = ChessMove::new(from, (center_rank, file + 1));
-                if let Some(piece) = state[from]
-                    && piece.kind.is_pawn()
-                    && piece.color == state.turn
-                    && mv.check_physically_possible(state).is_ok()
-                {
-                    forced.push(mv);
-                }
-            }
-        }
-
-        // Verify that the move is a forced one
-        if !(forced.is_empty() || forced.contains(self)) {
-            return Err(ChessError::EnPassant);
-        }
-
-        // Verify promotion
-        if piece.kind == Kind::Pawn && (self.to.0 == 0 || self.to.0 == 7) {
-            let Some(promotion) = self.promotion else {
-                return Err(ChessError::Promotion);
-            };
-
-            if promotion == Kind::Pawn {
-                return Err(ChessError::Promotion);
-            }
-        } else if self.promotion.is_some() {
-            return Err(ChessError::Promotion);
-        }
-
-        Ok(())
     }
 
     fn exec(self, state: &mut Self::State) {
         assert!(state[self.from].is_some());
         state[self.to] = state[self.from].take();
         state.turn = !state.turn;
+        state.moves.take();
 
         if let Some(promotion) = self.promotion {
             state[self.to].as_mut().unwrap().kind = promotion;
@@ -752,14 +794,20 @@ impl Move for ChessMove {
         // detect en passant
         if piece.kind == Kind::Pawn && Some(self.to) == state.en_passant {
             match piece.color {
-                Color::White => state[(self.to.0 - 1, self.to.1)] = None,
-                Color::Black => state[(self.to.0 + 1, self.to.1)] = None,
+                Color::White => state[(self.to.rank - 1, self.to.file).into()] = None,
+                Color::Black => state[(self.to.rank + 1, self.to.file).into()] = None,
             }
         }
 
         state.en_passant = None;
-        if piece.kind == Kind::Pawn && self.to.0.abs_diff(self.from.0) == 2 {
-            state.en_passant = Some(((self.to.0 + self.from.0) / 2, self.to.1));
+        if piece.kind == Kind::Pawn
+            && (self.to.rank.abs_diff(self.from.rank) == 2
+                || self.to.file.abs_diff(self.from.file) == 2)
+        {
+            state.en_passant = Some(Pos {
+                rank: (self.to.rank + self.from.rank) / 2,
+                file: (self.to.file + self.from.file) / 2,
+            });
         }
 
         if state.victory.is_none() {
