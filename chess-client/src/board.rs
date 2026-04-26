@@ -186,6 +186,7 @@ fn on_stage_move(
             from: **from.1,
             to: **to.1,
             promotion: None,
+            direction: None,
         };
 
         if let Some(piece) = state.board[from.1.0]
@@ -232,6 +233,7 @@ fn on_stage_move(
                 from: current.0,
                 to: pos.0,
                 promotion: None,
+                direction: None,
             };
             if let Some(piece) = state.board[current.0]
                 && piece.kind == Kind::Pawn
@@ -270,6 +272,7 @@ fn on_promote(
             from: from.0,
             to: to.0,
             promotion: Some(ev.0),
+            direction: None,
         },
         true,
     ));

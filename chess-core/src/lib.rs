@@ -54,8 +54,10 @@ pub mod tests {
     fn pawn_moves_only_up() {
         let mut board = Board::from_str("///Pp").unwrap();
         board.rules.move_order = false;
+        board.rules.move_after_win = true;
 
         ChessMove::new((4, 0), (5, 0)).check(&board).unwrap();
+        ChessMove::new((4, 0), (6, 0)).check(&board).unwrap();
         ChessMove::new((4, 1), (3, 1)).check(&board).unwrap();
         ChessMove::new((4, 0), (5, 0)).exec(&mut board);
         assert!(ChessMove::new((5, 0), (7, 0)).check(&board).is_err());
@@ -200,7 +202,7 @@ impl Not for Color {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum Direction {
     Up,
     Left,
@@ -396,6 +398,7 @@ impl Board {
                     from: pos,
                     to: target,
                     promotion: None,
+                    direction: None,
                 });
             }
         }
@@ -420,6 +423,7 @@ impl Board {
                         from: pos,
                         to: target,
                         promotion: None,
+                        direction: None,
                     });
                 } else {
                     break;
@@ -546,6 +550,7 @@ impl Board {
                                         from: pos,
                                         to: target,
                                         promotion: Some(kind),
+                                        direction: None,
                                     });
                                 }
                             } else {
@@ -553,6 +558,7 @@ impl Board {
                                     from: pos,
                                     to: target,
                                     promotion: None,
+                                    direction: None,
                                 });
                             }
 
@@ -713,6 +719,7 @@ impl FromStr for Board {
 pub struct ChessMove {
     pub from: Pos,
     pub to: Pos,
+    pub direction: Option<Direction>,
     pub promotion: Option<Kind>,
 }
 
@@ -722,6 +729,7 @@ impl ChessMove {
             from: from.into(),
             to: to.into(),
             promotion: None,
+            direction: None,
         }
     }
 
@@ -785,8 +793,16 @@ impl Move for ChessMove {
         state.turn = !state.turn;
         state.moves.take();
 
+        if self.from != self.to {
+            state[self.to].as_mut().unwrap().moved = true;
+        }
+
         if let Some(promotion) = self.promotion {
             state[self.to].as_mut().unwrap().kind = promotion;
+        }
+
+        if let Some(direction) = self.direction {
+            state[self.to].as_mut().unwrap().direction = direction;
         }
 
         let piece = state[self.to].unwrap();
