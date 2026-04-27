@@ -35,14 +35,16 @@ fn on_play_token(
 }
 
 fn on_go_back(mut ev: MessageReader<GoBack>, mut next: ResMut<NextState<State>>) {
-    for _ in ev.read() {
+    if !ev.is_empty() {
         next.set(State::Menu);
+        ev.clear();
     }
 }
 
-fn on_game_start(ev: MessageReader<GameStarted>, mut next: ResMut<NextState<State>>) {
+fn on_game_start(mut ev: MessageReader<GameStarted>, mut next: ResMut<NextState<State>>) {
     if !ev.is_empty() {
         next.set(State::Game);
+        ev.clear();
     }
 }
 
@@ -52,9 +54,10 @@ fn on_game_ended(mut ev: MessageReader<GameEnded>, mut commands: Commands) {
     }
 }
 
-fn on_success(ev: MessageReader<handshake::Success>, mut next: ResMut<NextState<State>>) {
+fn on_success(mut ev: MessageReader<handshake::Success>, mut next: ResMut<NextState<State>>) {
     if !ev.is_empty() {
         next.set(State::Menu);
+        ev.clear();
     }
 }
 

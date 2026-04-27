@@ -212,7 +212,7 @@ pub enum Direction {
 
 impl Direction {
     #[must_use]
-    fn left(self) -> Direction {
+    pub fn left(self) -> Direction {
         match self {
             Self::Up => Self::Left,
             Self::Left => Self::Down,
@@ -222,12 +222,25 @@ impl Direction {
     }
 
     #[must_use]
-    fn right(self) -> Direction {
+    pub fn right(self) -> Direction {
         match self {
             Self::Up => Self::Right,
             Self::Left => Self::Up,
             Self::Right => Self::Down,
             Self::Down => Self::Left,
+        }
+    }
+}
+
+impl Not for Direction {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Self::Up => Self::Down,
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+            Self::Down => Self::Up,
         }
     }
 }
@@ -614,7 +627,9 @@ impl Board {
                         // Forward 2
                         if can1 && !piece.moved {
                             let target = pos + Pos { rank: 2, file: 0 } * piece.direction;
-                            add(target);
+                            if self.get(target).is_empty() {
+                                add(target);
+                            }
                         }
 
                         // Capture left
@@ -815,7 +830,6 @@ impl Move for ChessMove {
 
     fn check(&self, state: &Self::State) -> Result<(), ChessError> {
         let moves = state.get_moves(true);
-        println!("{:?}", moves.forced);
         if moves.moves.contains(self) && (moves.forced.is_empty() || moves.forced.contains(self)) {
             Ok(())
         } else {

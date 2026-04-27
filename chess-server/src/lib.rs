@@ -336,7 +336,9 @@ async fn match_room(
 ) -> Result<Json<RoomPlayer>, Error> {
     let result = sqlx::query_as!(
         JoinResult,
-        "UPDATE room SET open=false WHERE entry_code is NULL AND open=true RETURNING room_id, white_taken;"
+        "UPDATE room SET open=false WHERE room_id = (
+            SELECT room_id FROM room WHERE entry_code is NULL AND open=true LIMIT 1 FOR UPDATE
+        ) RETURNING room_id, white_taken;"
     )
     .fetch_optional(&state.pool)
     .await?;

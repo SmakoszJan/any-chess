@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use bevy::{
     color::palettes::css::{self, RED},
     picking::hover::Hovered,
@@ -9,7 +11,13 @@ use chess_core::Kind;
 use crate::{GoBack, board::ClientState};
 
 #[derive(Component)]
-struct PromotionUi;
+struct Ui<T>(PhantomData<T>);
+
+impl<T> Ui<T> {
+    fn new() -> Self {
+        Self(PhantomData)
+    }
+}
 
 fn setup(assets: Res<AssetServer>, mut commands: Commands) {
     let pieces = [
@@ -27,7 +35,7 @@ fn setup(assets: Res<AssetServer>, mut commands: Commands) {
                 flex_direction: FlexDirection::Column,
                 ..Default::default()
             },
-            PromotionUi,
+            Ui::<Promote>::new(),
             Visibility::Hidden,
         ))
         .with_children(|parent| {
@@ -49,6 +57,41 @@ fn setup(assets: Res<AssetServer>, mut commands: Commands) {
                 ));
             }
         });
+
+    let rotleft = assets.load("rotate.png");
+
+    commands
+        .spawn((Node::DEFAULT, Ui::<Rotate>::new(), Visibility::Hidden))
+        .with_children(|parent| {
+            // Right
+            parent.spawn((
+                Node {
+                    top: px(-32),
+                    left: px(16),
+                    position_type: PositionType::Absolute,
+                    ..Default::default()
+                },
+                ImageNode::new(rotleft.clone()),
+                Button,
+                observe(|_: On<Activate>, mut commands: Commands| {
+                    commands.trigger(Rotate(chess_core::Direction::Right));
+                }),
+            ));
+            // Left
+            parent.spawn((
+                Node {
+                    top: px(-32),
+                    left: px(-48),
+                    position_type: PositionType::Absolute,
+                    ..Default::default()
+                },
+                ImageNode::new(rotleft.clone()).with_flip_x(),
+                Button,
+                observe(|_: On<Activate>, mut commands: Commands| {
+                    commands.trigger(Rotate(chess_core::Direction::Left));
+                }),
+            ));
+        });
 }
 
 fn hover_color(
@@ -64,16 +107,34 @@ fn hover_color(
 }
 
 #[derive(Event)]
-pub struct ShowUi {
-    pub at: Vec3,
+pub struct ShowUi<T> {
+    at: Vec3,
+    phantom: PhantomData<T>,
+}
+
+impl<T> ShowUi<T> {
+    #[must_use]
+    pub fn at(at: Vec3) -> Self {
+        Self {
+            at,
+            phantom: PhantomData,
+        }
+    }
 }
 
 #[derive(Event)]
-pub struct HideUi;
+pub struct HideUi<T>(PhantomData<T>);
 
-fn on_show_ui(
-    ev: On<ShowUi>,
-    ui: Single<(&mut Node, &mut Visibility), With<PromotionUi>>,
+impl<T> HideUi<T> {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+fn on_show_ui<T: Send + Sync + 'static>(
+    ev: On<ShowUi<T>>,
+    ui: Single<(&mut Node, &mut Visibility), With<Ui<T>>>,
     cam: Single<(&Camera, &GlobalTransform)>,
 ) {
     let (mut node, mut vis) = ui.into_inner();
@@ -84,12 +145,18 @@ fn on_show_ui(
     node.top = px(pos.y);
 }
 
-fn on_hide_ui(_: On<HideUi>, mut ui: Single<&mut Visibility, With<PromotionUi>>) {
+fn on_hide_ui<T: Send + Sync + 'static>(
+    _: On<HideUi<T>>,
+    mut ui: Single<&mut Visibility, With<Ui<T>>>,
+) {
     **ui = Visibility::Hidden;
 }
 
 #[derive(Event, Component)]
 pub struct Promote(pub Kind);
+
+#[derive(Event, Component)]
+pub struct Rotate(pub chess_core::Direction);
 
 #[derive(Component)]
 struct GameInfo;
@@ -189,6 +256,8 @@ pub fn plugin(app: &mut App) {
         )
         .add_systems(OnEnter(crate::State::Game), spawn_info)
         .add_systems(OnExit(crate::State::Game), despawn_info)
-        .add_observer(on_show_ui)
-        .add_observer(on_hide_ui);
+        .add_observer(on_show_ui::<Rotate>)
+        .add_observer(on_hide_ui::<Rotate>)
+        .add_observer(on_show_ui::<Promote>)
+        .add_observer(on_hide_ui::<Promote>);
 }
