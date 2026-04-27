@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 use aeronet_io::{
     Session,
     connection::{Disconnect, Disconnected},
@@ -6,9 +8,12 @@ use aeronet_websocket::client::WebSocketClientPlugin;
 use bevy::{color::palettes::css, ecs::query::QueryData, prelude::*};
 use chess_core::{Board, ChessMove, Color as ChessColor, Kind, Move, Pos, net::ClientMessage};
 
-use ui::{HideUi, Promote, ShowUi};
+use ui::Promote;
 
-use crate::net::{BoardPosition, RoomInfo, ServerBoard};
+use crate::{
+    board::ui::{HideUi, Rotate, ShowUi},
+    net::{BoardPosition, RoomInfo, ServerBoard},
+};
 
 mod ui;
 
@@ -36,7 +41,10 @@ fn sync_board(
 }
 
 fn sync_ui(
-    mut pieces: Query<(&BoardPosition, &mut Sprite, &mut Visibility), With<PieceMarker>>,
+    mut pieces: Query<
+        (&BoardPosition, &mut Sprite, &mut Visibility, &mut Transform),
+        With<PieceMarker>,
+    >,
     mut reader: MessageReader<SyncBoard>,
     state: Res<ClientState>,
     assets: Res<AssetServer>,
@@ -47,7 +55,7 @@ fn sync_ui(
 
         pieces
             .par_iter_mut()
-            .for_each(|(&sq, mut sprite, mut vis)| {
+            .for_each(|(&sq, mut sprite, mut vis, mut trans)| {
                 if let Some(piece) = state.board[sq.0] {
                     *vis = Visibility::Inherited;
                     let color_letter = match piece.color {
@@ -55,6 +63,26 @@ fn sync_ui(
                         chess_core::Color::Black => 'b',
                     };
                     sprite.image = assets.load(format!("{color_letter}_{:?}.png", piece.kind));
+                    let mut dir = piece.direction;
+                    if state.color == chess_core::Color::Black {
+                        dir = !dir;
+                    }
+                    if piece.color != state.color {
+                        if dir == chess_core::Direction::Up {
+                            dir = chess_core::Direction::Down;
+                        } else if dir == chess_core::Direction::Down {
+                            dir = chess_core::Direction::Up;
+                        }
+                    }
+                    *trans = trans.with_rotation(Quat::from_rotation_z(
+                        match dir {
+                            chess_core::Direction::Up => 0.0,
+                            chess_core::Direction::Left => 1.0,
+                            chess_core::Direction::Down => 2.0,
+                            chess_core::Direction::Right => 3.0,
+                        } * PI
+                            / 2.0,
+                    ))
                 } else {
                     *vis = Visibility::Hidden;
                 }
@@ -169,7 +197,8 @@ fn on_stage_move(
     {
         t.translation.y = 0.0;
     }
-    commands.trigger(HideUi);
+    commands.trigger(HideUi::<Promote>::new());
+    commands.trigger(HideUi::<Rotate>::new());
 
     // Hide all markers
     for mut marker in &mut markers {
@@ -202,9 +231,9 @@ fn on_stage_move(
                     from: current,
                     to: picked,
                 };
-                commands.trigger(ShowUi {
-                    at: to.2.translation() - Vec3::new(32.0, -128.0, 0.0),
-                });
+                commands.trigger(ShowUi::<Promote>::at(
+                    to.2.translation() - Vec3::new(32.0, -128.0, 0.0),
+                ));
             } else {
                 make_move.write(MakeMove(m, true));
             }
@@ -217,12 +246,19 @@ fn on_stage_move(
         state.move_state = ev.0.map_or(MoveState::None, MoveState::Start);
     }
 
-    // Lift the piece
     if let MoveState::Start(current) = state.move_state
         && let Ok(sq) = squares.get(current)
     {
+        // Lift the piece
         if let Ok(mut t) = pieces.get_mut(sq.0[0]) {
             t.translation.y = 16.0;
+        }
+
+        // Show rotation
+        if let Some(piece) = state.board[sq.1.0]
+            && piece.kind == Kind::Pawn
+        {
+            commands.trigger(ShowUi::<Rotate>::at(sq.2.translation()));
         }
 
         // Put markers
@@ -273,6 +309,36 @@ fn on_promote(
             to: to.0,
             promotion: Some(ev.0),
             direction: None,
+        },
+        true,
+    ));
+    commands.trigger(StageMove(None));
+}
+
+fn on_rotate(
+    ev: On<Rotate>,
+    squares: Query<&BoardPosition>,
+    state: Res<ClientState>,
+    mut make_move: MessageWriter<MakeMove>,
+    mut commands: Commands,
+) {
+    let MoveState::Start(sq) = state.move_state else {
+        return;
+    };
+    let pos = squares.get(sq).unwrap().0;
+    let dir = state.board[pos].unwrap().direction;
+    let dir = match ev.0 {
+        chess_core::Direction::Left => dir.left(),
+        chess_core::Direction::Right => dir.right(),
+        _ => unreachable!(),
+    };
+
+    make_move.write(MakeMove(
+        ChessMove {
+            from: pos,
+            to: pos,
+            promotion: None,
+            direction: Some(dir),
         },
         true,
     ));
@@ -389,7 +455,7 @@ fn disconnect(session: Single<Entity, With<Session>>, mut commands: Commands) {
 }
 
 fn on_disconnect(ev: On<Disconnected>, mut client: ResMut<ClientState>) {
-    client.connected = true;
+    client.connected = false;
     tracing::info!("Disconnected: {:?}", ev.reason);
 }
 
@@ -412,6 +478,7 @@ pub fn plugin(app: &mut App) {
         .add_observer(on_square_selected)
         .add_observer(on_stage_move)
         .add_observer(on_promote)
+        .add_observer(on_rotate)
         .add_observer(on_disconnect)
         .add_observer(on_connect)
         .add_message::<GameEnded>()

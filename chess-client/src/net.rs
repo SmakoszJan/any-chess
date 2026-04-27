@@ -344,6 +344,7 @@ fn disconnect_on_go_back(
     mut commands: Commands,
 ) {
     if !ev.is_empty() {
+        println!("????????????");
         commands.trigger(Disconnect::new(session.entity(), "client disconnected"));
     }
 }
