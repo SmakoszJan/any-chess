@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE room SET open=false WHERE room_id = (\n            SELECT room_id FROM room WHERE entry_code is NULL AND open=true LIMIT 1 FOR UPDATE\n        ) RETURNING room_id, white_taken;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "room_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "white_taken",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "54c3125d02fc034386fc63b1aae08c10bc2862bf7d9a6cccc80a6944c6dd69b5"
+}
