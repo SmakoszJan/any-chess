@@ -58,6 +58,7 @@ fn setup(assets: Res<AssetServer>, mut commands: Commands) {
             }
         });
 
+    // Rotate
     let rotleft = assets.load("rotate.png");
 
     commands
@@ -92,6 +93,28 @@ fn setup(assets: Res<AssetServer>, mut commands: Commands) {
                 }),
             ));
         });
+
+    // Ladder
+    let ladder = assets.load("ladder-start.png");
+    commands
+        .spawn((
+            Node::DEFAULT,
+            Ui::<Ladder>::new(),
+            Visibility::Hidden,
+            Button,
+            observe(|_: On<Activate>, mut commands: Commands| {
+                commands.trigger(Ladder);
+            }),
+        ))
+        .with_child((
+            ImageNode::new(ladder),
+            Node {
+                left: px(-32),
+                top: px(-32),
+                position_type: PositionType::Absolute,
+                ..Default::default()
+            },
+        ));
 }
 
 fn hover_color(
@@ -157,6 +180,9 @@ pub struct Promote(pub Kind);
 
 #[derive(Event, Component)]
 pub struct Rotate(pub chess_core::Direction);
+
+#[derive(Event, Component)]
+pub struct Ladder;
 
 #[derive(Component)]
 struct GameInfo;
@@ -258,6 +284,8 @@ pub fn plugin(app: &mut App) {
         .add_systems(OnExit(crate::State::Game), despawn_info)
         .add_observer(on_show_ui::<Rotate>)
         .add_observer(on_hide_ui::<Rotate>)
+        .add_observer(on_show_ui::<Ladder>)
+        .add_observer(on_hide_ui::<Ladder>)
         .add_observer(on_show_ui::<Promote>)
         .add_observer(on_hide_ui::<Promote>);
 }

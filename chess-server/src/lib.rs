@@ -1,5 +1,3 @@
-#![deny(clippy::unwrap_used)]
-
 use std::{
     borrow::Cow,
     hash::{DefaultHasher, Hash as _, Hasher},
@@ -42,10 +40,17 @@ pub enum Error {
     Sqlx(sqlx::Error),
     Io(std::io::Error),
     Jwt(jsonwebtoken::errors::Error),
+    Serde(serde_json::Error),
     NotFound,
     Unauthorized,
     Rejected,
     Gone,
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(v: serde_json::Error) -> Self {
+        Self::Serde(v)
+    }
 }
 
 impl IntoResponse for Error {
@@ -103,7 +108,7 @@ impl AppState {
             struct Res {
                 payload: serde_json::Value,
             }
-            let events = sqlx::query_as!(
+            let events: Vec<ChessEvent> = sqlx::query_as!(
                 Res,
                 "SELECT payload FROM event WHERE room_id=$1 ORDER BY time ASC;",
                 room
@@ -111,7 +116,8 @@ impl AppState {
             .fetch_all(&self.pool)
             .await?
             .into_iter()
-            .map(|v| serde_json::from_value(v.payload).expect("event deserialization failed"));
+            .map(|v| serde_json::from_value(v.payload))
+            .collect::<Result<_, _>>()?;
 
             let mut table = Table::new(room);
             table.load(events);
