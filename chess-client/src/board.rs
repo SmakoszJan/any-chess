@@ -211,12 +211,7 @@ fn on_stage_move(
         && let Some(picked) = ev.0
         && let Ok(to) = squares.get(picked)
     {
-        let mut m = ChessMove {
-            from: **from.1,
-            to: **to.1,
-            promotion: None,
-            direction: None,
-        };
+        let mut m = ChessMove::new(**from.1, **to.1);
 
         if let Some(piece) = state.board[from.1.0]
             && piece.kind == Kind::Pawn
