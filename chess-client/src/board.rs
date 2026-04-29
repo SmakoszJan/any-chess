@@ -6,12 +6,14 @@ use aeronet_io::{
 };
 use aeronet_websocket::client::WebSocketClientPlugin;
 use bevy::{color::palettes::css, ecs::query::QueryData, prelude::*};
-use chess_core::{Board, ChessMove, Color as ChessColor, Kind, Move, Pos, net::ClientMessage};
+use chess_core::{
+    Board, ChessMove, Color as ChessColor, Kind, LadderState, Move, Pos, net::ClientMessage,
+};
 
 use ui::Promote;
 
 use crate::{
-    board::ui::{HideUi, Rotate, ShowUi},
+    board::ui::{HideUi, Ladder, Rotate, ShowUi},
     net::{BoardPosition, RoomInfo, ServerBoard},
 };
 
@@ -19,6 +21,9 @@ mod ui;
 
 #[derive(Message)]
 struct SyncBoard;
+
+#[derive(Component)]
+struct LadderMark;
 
 #[derive(Component)]
 struct PieceMarker;
@@ -40,11 +45,54 @@ fn sync_board(
     }
 }
 
+#[derive(Component)]
+struct LadderVis;
+
+fn sync_ladders(
+    state: Res<ClientState>,
+    assets: Res<AssetServer>,
+    ladders: Query<Entity, With<LadderVis>>,
+    mut commands: Commands,
+    mut reader: MessageReader<SyncBoard>,
+) {
+    if !reader.is_empty() {
+        reader.clear();
+
+        // Hide rendered visualizations
+        for l in ladders {
+            commands.get_entity(l).unwrap().despawn();
+        }
+
+        let image = assets.load("ladder.png");
+
+        for (_, ladder) in &state.board.ladders {
+            let start_pos = state.posmap[(ladder.start.rank * 8 + ladder.start.file) as usize];
+            let end_pos = state.posmap[(ladder.end.rank * 8 + ladder.end.file) as usize];
+            let scale = (start_pos - end_pos).length() / 64.0;
+            commands.spawn((
+                Sprite {
+                    image: image.clone(),
+                    color: Color::WHITE.with_alpha(if ladder.built { 1.0 } else { 0.5 }),
+                    ..Default::default()
+                },
+                Transform::from_translation((start_pos + end_pos) / 2.0)
+                    .with_rotation(Quat::from_rotation_z(
+                        -(start_pos - end_pos).xy().angle_to(Vec2::Y),
+                    ))
+                    .with_scale(Vec3::new(1.0, scale, 1.0)),
+                LadderVis,
+            ));
+        }
+    }
+}
+
 fn sync_ui(
     mut pieces: Query<
         (&BoardPosition, &mut Sprite, &mut Visibility, &mut Transform),
-        With<PieceMarker>,
+        (With<PieceMarker>, Without<LadderMark>),
     >,
+    ladder_mark: Query<(&mut Visibility, &BoardPosition, &Children), With<LadderMark>>,
+    mut text: Query<&mut Text2d>,
     mut reader: MessageReader<SyncBoard>,
     state: Res<ClientState>,
     assets: Res<AssetServer>,
@@ -52,6 +100,17 @@ fn sync_ui(
 ) {
     if !reader.is_empty() {
         reader.clear();
+
+        for (mut vis, pos, kids) in ladder_mark {
+            if let Some(piece) = state.board[pos.0]
+                && piece.ladder_countdown != 0
+            {
+                *vis = Visibility::Inherited;
+                text.get_mut(kids[0]).unwrap().0 = piece.ladder_countdown.to_string();
+            } else {
+                *vis = Visibility::Hidden;
+            };
+        }
 
         pieces
             .par_iter_mut()
@@ -111,6 +170,7 @@ struct ClientState {
     move_state: MoveState,
     board: Board,
     connected: bool,
+    posmap: [Vec3; 64],
 }
 
 impl Default for ClientState {
@@ -122,12 +182,13 @@ impl Default for ClientState {
             move_state: MoveState::None,
             board: Board::new(),
             connected: false,
+            posmap: [Vec3::ZERO; 64],
         }
     }
 }
 
 #[derive(Message)]
-struct MakeMove(ChessMove, bool);
+struct MakeMove(ChessMove);
 
 #[derive(Event)]
 struct SelectSquare(Option<Entity>);
@@ -199,6 +260,7 @@ fn on_stage_move(
     }
     commands.trigger(HideUi::<Promote>::new());
     commands.trigger(HideUi::<Rotate>::new());
+    commands.trigger(HideUi::<Ladder>::new());
 
     // Hide all markers
     for mut marker in &mut markers {
@@ -230,7 +292,7 @@ fn on_stage_move(
                     to.2.translation() - Vec3::new(32.0, -128.0, 0.0),
                 ));
             } else {
-                make_move.write(MakeMove(m, true));
+                make_move.write(MakeMove(m));
             }
             return;
         }
@@ -249,23 +311,27 @@ fn on_stage_move(
             t.translation.y = 16.0;
         }
 
-        // Show rotation
-        if let Some(piece) = state.board[sq.1.0]
-            && piece.kind == Kind::Pawn
-        {
-            commands.trigger(ShowUi::<Rotate>::at(sq.2.translation()));
+        if let Some(piece) = state.board[sq.1.0] {
+            match piece.kind {
+                Kind::Pawn => {
+                    // Show rotation
+                    commands.trigger(ShowUi::<Rotate>::at(sq.2.translation()));
+                }
+                Kind::Knight => {
+                    // Show ladder
+                    if piece.ladder == LadderState::None {
+                        commands.trigger(ShowUi::<Ladder>::at(sq.2.translation()));
+                    }
+                }
+                _ => (),
+            }
         }
 
         // Put markers
         let current = *sq.1;
 
         for (mut sprite, mut vis, pos) in markers {
-            let mut m = ChessMove {
-                from: current.0,
-                to: pos.0,
-                promotion: None,
-                direction: None,
-            };
+            let mut m = ChessMove::new(current.0, pos.0);
             if let Some(piece) = state.board[current.0]
                 && piece.kind == Kind::Pawn
                 && (pos.rank == 0 || pos.rank == 7)
@@ -298,15 +364,7 @@ fn on_promote(
     let from = pieces.get(from).unwrap();
     let to = pieces.get(to).unwrap();
 
-    make_move.write(MakeMove(
-        ChessMove {
-            from: from.0,
-            to: to.0,
-            promotion: Some(ev.0),
-            direction: None,
-        },
-        true,
-    ));
+    make_move.write(MakeMove(ChessMove::new(from.0, to.0).promote(ev.0)));
     commands.trigger(StageMove(None));
 }
 
@@ -328,15 +386,23 @@ fn on_rotate(
         _ => unreachable!(),
     };
 
-    make_move.write(MakeMove(
-        ChessMove {
-            from: pos,
-            to: pos,
-            promotion: None,
-            direction: Some(dir),
-        },
-        true,
-    ));
+    make_move.write(MakeMove(ChessMove::rotate(pos, dir)));
+    commands.trigger(StageMove(None));
+}
+
+fn on_ladder(
+    _: On<Ladder>,
+    squares: Query<&BoardPosition>,
+    state: Res<ClientState>,
+    mut make_move: MessageWriter<MakeMove>,
+    mut commands: Commands,
+) {
+    let MoveState::Start(sq) = state.move_state else {
+        return;
+    };
+    let pos = squares.get(sq).unwrap().0;
+
+    make_move.write(MakeMove(ChessMove::ladder(pos)));
     commands.trigger(StageMove(None));
 }
 
@@ -349,13 +415,11 @@ fn on_make_move(
     for m in m.drain() {
         m.0.exec(&mut state.board);
         writer.write(SyncBoard);
-        if m.1 {
-            session.send.push(
-                serde_json::to_vec(&ClientMessage::Move(m.0))
-                    .unwrap()
-                    .into(),
-            );
-        }
+        session.send.push(
+            serde_json::to_vec(&ClientMessage::Move(m.0))
+                .unwrap()
+                .into(),
+        );
 
         state.move_state = MoveState::None;
         state.move_allowed = state.board.turn == state.color;
@@ -372,6 +436,7 @@ fn spawn_board(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    assets: Res<AssetServer>,
     mut writer: MessageWriter<SyncBoard>,
     mut client: ResMut<ClientState>,
     server: Res<ServerBoard>,
@@ -386,10 +451,14 @@ fn spawn_board(
     let white = materials.add(WHITE);
     let black = materials.add(BLACK);
 
+    let ladder_marker = assets.load("ladder-start.png");
+
     let mut x = if room.color.is_white() { -224.0 } else { 224.0 };
     let mut y = if room.color.is_white() { -224.0 } else { 224.0 };
     for rank in 0..8 {
         for file in 0..8 {
+            let ladder_c = ladder_marker.clone();
+            client.posmap[(rank * 8 + file) as usize] = Vec3::new(x, y, 0.0);
             commands
                 .spawn((
                     Mesh2d(square.clone()),
@@ -398,15 +467,16 @@ fn spawn_board(
                     } else {
                         white.clone()
                     }),
-                    Transform::from_xyz(x, y, 0.0),
+                    Transform::from_xyz(x, y, -1.0),
                     Pickable::default(),
                     BoardPosition(Pos { rank, file }),
                 ))
                 .observe(on_square_clicked)
-                .with_children(|children| {
+                .with_children(move |children| {
                     children.spawn((
                         Sprite::default(),
-                        Transform::from_scale(Vec3::splat(0.5)),
+                        Transform::from_scale(Vec3::splat(0.5))
+                            .with_translation(Vec3::new(0.0, 0.0, 2.0)),
                         BoardPosition(Pos { rank, file }),
                         PieceMarker,
                     ));
@@ -415,7 +485,21 @@ fn spawn_board(
                         BoardPosition(Pos { rank, file }),
                         MoveMarker,
                         Visibility::Hidden,
+                        Transform::from_xyz(0.0, 0.0, 2.0),
                     ));
+                    children
+                        .spawn((
+                            Sprite {
+                                image: ladder_c,
+                                ..Default::default()
+                            },
+                            BoardPosition(Pos { rank, file }),
+                            Transform::from_translation(Vec3::new(24.0, -24.0, 0.0))
+                                .with_scale(Vec3::splat(0.5)),
+                            Visibility::Hidden,
+                            LadderMark,
+                        ))
+                        .with_child((Text2d::new("0"), TextFont::from_font_size(48.0)));
                 });
             if room.color.is_white() {
                 x += 64.0;
@@ -463,7 +547,12 @@ pub fn plugin(app: &mut App) {
     app.add_plugins((MeshPickingPlugin, WebSocketClientPlugin, ui::plugin))
         .add_systems(
             Update,
-            (sync_ui.after(sync_board), sync_board, on_make_move),
+            (
+                sync_ui.after(sync_board),
+                sync_board,
+                sync_ladders,
+                on_make_move,
+            ),
         )
         .add_systems(OnEnter(super::State::Game), spawn_board)
         .add_systems(OnExit(super::State::Game), (disconnect, despawn_board))
@@ -474,6 +563,7 @@ pub fn plugin(app: &mut App) {
         .add_observer(on_stage_move)
         .add_observer(on_promote)
         .add_observer(on_rotate)
+        .add_observer(on_ladder)
         .add_observer(on_disconnect)
         .add_observer(on_connect)
         .add_message::<GameEnded>()
