@@ -6,6 +6,7 @@ use std::{
     sync::OnceLock,
 };
 
+use generational_arena::{Arena, Index as ArenaIndex};
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: &str = "0.4";
@@ -246,11 +247,20 @@ impl Not for Direction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LadderState {
+    None,
+    Building(ArenaIndex),
+    Spent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Piece {
     pub kind: Kind,
     pub color: Color,
     pub direction: Direction,
     pub moved: bool,
+    pub ladder: LadderState,
+    pub ladder_countdown: u8,
 }
 
 impl Display for Piece {
@@ -377,6 +387,13 @@ struct MoveSet {
     en_passant: bool,
 }
 
+#[derive(Clone, Copy)]
+pub struct Ladder {
+    pub start: Pos,
+    pub end: Pos,
+    pub built: bool,
+}
+
 #[derive(Clone)]
 pub struct Board {
     rules: Rules,
@@ -385,6 +402,7 @@ pub struct Board {
     pub victory: Option<Color>,
     en_passant: Option<Pos>,
     moves: OnceLock<MoveSet>,
+    pub ladders: Arena<Ladder>,
 }
 
 impl Board {
@@ -402,6 +420,7 @@ impl Board {
             victory: None,
             en_passant: None,
             moves: OnceLock::new(),
+            ladders: Arena::new(),
         }
     }
 
@@ -429,12 +448,7 @@ impl Board {
             };
 
             if self.get(target).is_empty_or(|v| v.color != piece.color) {
-                moves.insert(ChessMove {
-                    from: pos,
-                    to: target,
-                    promotion: None,
-                    direction: None,
-                });
+                moves.insert(ChessMove::new(pos, target));
             }
         }
     }
@@ -454,12 +468,7 @@ impl Board {
 
             loop {
                 if self.get(target).is_empty_or(|v| v.color != piece.color) {
-                    moves.insert(ChessMove {
-                        from: pos,
-                        to: target,
-                        promotion: None,
-                        direction: None,
-                    });
+                    moves.insert(ChessMove::new(pos, target));
                 } else {
                     break;
                 }
@@ -494,6 +503,24 @@ impl Board {
 
                 if self.rules.move_order && piece.color != self.turn {
                     continue;
+                }
+
+                for (_, ladder) in &self.ladders {
+                    if !ladder.built {
+                        continue;
+                    }
+
+                    let target = if ladder.start == pos {
+                        ladder.end
+                    } else if ladder.end == pos {
+                        ladder.start
+                    } else {
+                        continue;
+                    };
+
+                    if self.get(target) == Tile::Empty {
+                        moves.insert(ChessMove::new(pos, target));
+                    }
                 }
 
                 match piece.kind {
@@ -563,6 +590,10 @@ impl Board {
                             ],
                             &mut moves,
                         );
+
+                        if piece.ladder == LadderState::None {
+                            moves.insert(ChessMove::ladder(pos));
+                        }
                     }
                     Kind::Pawn => {
                         let mut add = |target: Pos| {
@@ -581,12 +612,7 @@ impl Board {
                                     Kind::Queen,
                                     Kind::King,
                                 ] {
-                                    candidates.insert(ChessMove {
-                                        from: pos,
-                                        to: target,
-                                        promotion: Some(kind),
-                                        direction: None,
-                                    });
+                                    candidates.insert(ChessMove::new(pos, target).promote(kind));
                                 }
                             } else {
                                 candidates.insert(ChessMove {
@@ -594,6 +620,7 @@ impl Board {
                                     to: target,
                                     promotion: None,
                                     direction: None,
+                                    use_ladder: false,
                                 });
                             }
 
@@ -645,18 +672,8 @@ impl Board {
                         }
 
                         // We can also just rotate
-                        moves.insert(ChessMove {
-                            from: pos,
-                            to: pos,
-                            direction: Some(piece.direction.left()),
-                            promotion: None,
-                        });
-                        moves.insert(ChessMove {
-                            from: pos,
-                            to: pos,
-                            direction: Some(piece.direction.right()),
-                            promotion: None,
-                        });
+                        moves.insert(ChessMove::rotate(pos, piece.direction.left()));
+                        moves.insert(ChessMove::rotate(pos, piece.direction.right()));
                     }
                 }
             }
@@ -750,6 +767,8 @@ impl FromStr for Board {
                     Color::Black => Direction::Down,
                 },
                 moved: false,
+                ladder: LadderState::None,
+                ladder_countdown: 0,
             });
             file += 1;
         }
@@ -761,6 +780,7 @@ impl FromStr for Board {
             victory: None,
             en_passant: None,
             moves: OnceLock::default(),
+            ladders: Arena::new(),
         })
     }
 }
@@ -772,6 +792,7 @@ pub struct ChessMove {
     pub to: Pos,
     pub direction: Option<Direction>,
     pub promotion: Option<Kind>,
+    pub use_ladder: bool,
 }
 
 impl ChessMove {
@@ -781,12 +802,35 @@ impl ChessMove {
             to: to.into(),
             promotion: None,
             direction: None,
+            use_ladder: false,
         }
     }
 
     pub const fn promote(mut self, kind: Kind) -> Self {
         self.promotion = Some(kind);
         self
+    }
+
+    pub fn ladder(at: impl Into<Pos>) -> Self {
+        let at = at.into();
+        Self {
+            from: at,
+            to: at,
+            direction: None,
+            promotion: None,
+            use_ladder: true,
+        }
+    }
+
+    pub fn rotate(at: impl Into<Pos>, dir: Direction) -> Self {
+        let at = at.into();
+        Self {
+            from: at,
+            to: at,
+            direction: Some(dir),
+            promotion: None,
+            use_ladder: false,
+        }
     }
 }
 
@@ -839,8 +883,15 @@ impl Move for ChessMove {
 
     fn exec(self, state: &mut Self::State) {
         assert!(state[self.from].is_some());
+
+        // Destroy ladder built by taken piece
+        if let Some(piece) = state[self.to]
+            && let LadderState::Building(ladder) = piece.ladder
+        {
+            state.ladders.remove(ladder);
+        }
+
         state[self.to] = state[self.from].take();
-        state.turn = !state.turn;
         state.moves.take();
 
         if self.from != self.to {
@@ -855,6 +906,53 @@ impl Move for ChessMove {
             state[self.to].as_mut().unwrap().direction = direction;
         }
 
+        // Drop ladder counters
+        for (i, piece) in state
+            .state
+            .iter_mut()
+            .enumerate()
+            .map(|(i, p)| Some((i, p.as_mut()?)))
+            .flatten()
+        {
+            // We already changed color
+            if piece.color != state.turn {
+                continue;
+            }
+
+            if let LadderState::Building(ladder) = piece.ladder {
+                let l = state.ladders.get_mut(ladder).unwrap();
+                l.end = Pos {
+                    rank: (i as i32) / 8,
+                    file: (i as i32) % 8,
+                };
+
+                if piece.ladder_countdown == 1 {
+                    if l.start == l.end {
+                        state.ladders.remove(ladder);
+                    } else {
+                        l.built = true;
+                    }
+                    piece.ladder = LadderState::Spent;
+                }
+            }
+
+            if piece.ladder_countdown > 0 {
+                piece.ladder_countdown -= 1;
+            }
+        }
+
+        // USe ladder
+        if self.use_ladder {
+            let ladder = state.ladders.insert(Ladder {
+                start: self.to,
+                end: self.to,
+                built: false,
+            });
+            let me = state[self.to].as_mut().unwrap();
+            me.ladder_countdown = 3;
+            me.ladder = LadderState::Building(ladder);
+        }
+
         let piece = state[self.to].unwrap();
 
         // detect en passant
@@ -865,6 +963,7 @@ impl Move for ChessMove {
             }
         }
 
+        state.turn = !state.turn;
         state.en_passant = None;
         if piece.kind == Kind::Pawn
             && (self.to.rank.abs_diff(self.from.rank) == 2
