@@ -9,7 +9,7 @@ use std::{
 use generational_arena::{Arena, Index as ArenaIndex};
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: &str = "0.4";
+pub const VERSION: &str = "0.8";
 
 pub mod net;
 
@@ -163,6 +163,7 @@ pub enum Kind {
     Bishop,
     King,
     Queen,
+    Knook,
 }
 
 impl Kind {
@@ -272,6 +273,7 @@ impl Display for Piece {
             Kind::Bishop => 'b',
             Kind::Queen => 'q',
             Kind::King => 'k',
+            Kind::Knook => 'o',
         };
 
         if self.color == Color::White {
@@ -553,7 +555,7 @@ impl Board {
                         self.gen_directions(
                             piece,
                             pos,
-                            [(1, 0), (1, 0), (0, -1), (0, 1)],
+                            [(1, 0), (-1, 0), (0, -1), (0, 1)],
                             &mut moves,
                         );
                     }
@@ -575,6 +577,41 @@ impl Board {
                         );
                     }
                     Kind::Knight => {
+                        let patterns = [
+                            (-1, -2),
+                            (-1, 2),
+                            (1, -2),
+                            (1, 2),
+                            (2, -1),
+                            (2, 1),
+                            (-2, -1),
+                            (-2, 1),
+                        ];
+                        for (dx, dy) in patterns {
+                            let target = Pos {
+                                rank: pos.rank + dy,
+                                file: pos.file + dx,
+                            };
+
+                            if self
+                                .get(target)
+                                .is_empty_or(|v| v.color != piece.color || v.kind == Kind::Rook)
+                            {
+                                moves.insert(ChessMove::new(pos, target));
+                            }
+                        }
+
+                        if piece.ladder == LadderState::None {
+                            moves.insert(ChessMove::ladder(pos));
+                        }
+                    }
+                    Kind::Knook => {
+                        self.gen_directions(
+                            piece,
+                            pos,
+                            [(1, 0), (-1, 0), (0, -1), (0, 1)],
+                            &mut moves,
+                        );
                         self.gen_patterns(
                             piece,
                             pos,
@@ -590,10 +627,6 @@ impl Board {
                             ],
                             &mut moves,
                         );
-
-                        if piece.ladder == LadderState::None {
-                            moves.insert(ChessMove::ladder(pos));
-                        }
                     }
                     Kind::Pawn => {
                         let mut add = |target: Pos| {
@@ -884,12 +917,16 @@ impl Move for ChessMove {
     fn exec(self, state: &mut Self::State) {
         assert!(state[self.from].is_some());
 
-        // Destroy ladder built by taken piece
-        if let Some(piece) = state[self.to]
-            && let LadderState::Building(ladder) = piece.ladder
-        {
-            state.ladders.remove(ladder);
-        }
+        let was_friendly_rook = if let Some(piece) = state[self.to] {
+            // Destroy ladder built by taken piece
+            if let LadderState::Building(ladder) = piece.ladder {
+                state.ladders.remove(ladder);
+            }
+
+            piece.kind == Kind::Rook && piece.color == state.turn
+        } else {
+            false
+        };
 
         state[self.to] = state[self.from].take();
         state.moves.take();
@@ -904,6 +941,26 @@ impl Move for ChessMove {
 
         if let Some(direction) = self.direction {
             state[self.to].as_mut().unwrap().direction = direction;
+        }
+
+        // We turn the knight into a knook before ladders
+        if was_friendly_rook
+            && let Some(piece) = state[self.to]
+            && piece.kind == Kind::Knight
+        {
+            // Drop ladder
+            if let LadderState::Building(ladder) = piece.ladder {
+                state.ladders.remove(ladder);
+            }
+
+            state[self.to] = Some(Piece {
+                kind: Kind::Knook,
+                color: piece.color,
+                direction: piece.direction,
+                moved: true,
+                ladder: LadderState::None,
+                ladder_countdown: 0,
+            });
         }
 
         // Drop ladder counters
@@ -941,7 +998,7 @@ impl Move for ChessMove {
             }
         }
 
-        // USe ladder
+        // Use ladder
         if self.use_ladder {
             let ladder = state.ladders.insert(Ladder {
                 start: self.to,
