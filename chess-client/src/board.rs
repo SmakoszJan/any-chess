@@ -299,9 +299,11 @@ fn on_stage_move(
     }
 
     // Otherwise we stage a new one
-    if state.move_allowed {
-        state.move_state = ev.0.map_or(MoveState::None, MoveState::Start);
+    if !state.move_allowed {
+        return;
     }
+
+    state.move_state = ev.0.map_or(MoveState::None, MoveState::Start);
 
     if let MoveState::Start(current) = state.move_state
         && let Ok(sq) = squares.get(current)
